@@ -18,4 +18,6 @@ public interface FavoriteProductRepository {
     long putFavoriteProduct(long sn, long productNo, int purchaseQuantity, String account);
 
     boolean deleteFavoriteProduct(long sn);
+
+    String getUserIdBySn(long sn);
 }

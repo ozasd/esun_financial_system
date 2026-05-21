@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 
 import com.esun.financialsystem.common.exception.BadRequestException;
 import com.esun.financialsystem.data.repository.FavoriteProductRepository;
@@ -17,12 +20,24 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
 class FavoriteProductServiceImplTest {
 
     @Mock
     private FavoriteProductRepository favoriteProductRepository;
+
+    @Mock
+    private StringRedisTemplate redisTemplate;
+
+    @Mock
+    private ObjectMapper objectMapper;
+
+    @Mock
+    private ValueOperations<String, String> valueOperations;
 
     @InjectMocks
     private FavoriteProductServiceImpl favoriteProductService;
@@ -81,6 +96,8 @@ class FavoriteProductServiceImplTest {
                 2,
                 "1111999666");
 
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(anyString(), eq("1"), any())).thenReturn(true);
         when(favoriteProductRepository.postFavoriteProduct("A1236456789", 1L, 2, "1111999666"))
                 .thenReturn(9L);
 

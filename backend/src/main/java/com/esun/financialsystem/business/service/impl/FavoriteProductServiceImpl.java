@@ -18,8 +18,15 @@ import com.esun.financialsystem.data.repository.FavoriteProductRepository;
 import com.esun.financialsystem.business.service.FavoriteProductService;
 import java.util.Set;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadLocalRandom;
+import java.time.Duration;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.core.JsonProcessingException;
 
 // @Service
 // 告訴 Spring：這是一個 Service 層物件
@@ -38,10 +45,16 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
     // Repository：負責資料庫操作
     // 類似 Express 的 model/db layer
     private final FavoriteProductRepository favoriteProductRepository;
+    private final StringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
 
     // Spring 自動注入 Repository
-    public FavoriteProductServiceImpl(FavoriteProductRepository favoriteProductRepository) {
+    public FavoriteProductServiceImpl(FavoriteProductRepository favoriteProductRepository,
+                                      StringRedisTemplate redisTemplate,
+                                      ObjectMapper objectMapper) {
         this.favoriteProductRepository = favoriteProductRepository;
+        this.redisTemplate = redisTemplate;
+        this.objectMapper = objectMapper;
     }
 
     // 新增商品商業邏輯
@@ -53,12 +66,25 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
         // 驗證 userId
         validateUserId(request.userId());
         validateAccount(request.account());
+
+        // Idempotency 檢查
+        String idempotencyKey = String.format("idempotency:postFavoriteProduct:%s:%d:%s",
+                request.userId(), request.productNo(), request.account());
+        Boolean success = redisTemplate.opsForValue().setIfAbsent(idempotencyKey, "1", Duration.ofSeconds(10));
+        if (Boolean.FALSE.equals(success)) {
+            throw new BadRequestException("Duplicate request, please try again later");
+        }
+
         // 呼叫 Repository 寫入 DB
-        return favoriteProductRepository.postFavoriteProduct(
+        long sn = favoriteProductRepository.postFavoriteProduct(
                 request.userId(),
                 request.productNo(),
                 request.purchaseQuantity(),
                 request.account());
+
+        // 清除快取
+        evictUserCache(request.userId());
+        return sn;
     }
 
     // 查詢清單商業邏輯
@@ -83,24 +109,63 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
     @Override
     public List<FavoriteProductResponse> getFavoriteProductsByUser(String userId) {
         validateUserId(userId);
-        return favoriteProductRepository.getFavoriteProductsByUser(userId);
+        String cacheKey = "cache:user_favorites:" + userId;
+        try {
+            String cachedData = redisTemplate.opsForValue().get(cacheKey);
+            if (StringUtils.hasText(cachedData)) {
+                return objectMapper.readValue(cachedData, new TypeReference<List<FavoriteProductResponse>>() {});
+            }
+        } catch (Exception e) {
+            // Ignore cache read errors and fallback to DB
+        }
+
+        List<FavoriteProductResponse> dbResult = favoriteProductRepository.getFavoriteProductsByUser(userId);
+
+        try {
+            String jsonData = objectMapper.writeValueAsString(dbResult);
+            // 基礎過期時間 5 分鐘 (300秒) + 隨機 0~300 秒，防止快取雪崩
+            long ttlSeconds = 300 + ThreadLocalRandom.current().nextInt(301);
+            redisTemplate.opsForValue().set(cacheKey, jsonData, ttlSeconds, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            // Ignore cache write errors
+        }
+
+        return dbResult;
     }
 
     // 更新商品商業邏輯
     @Override
     public long putFavoriteProduct(long sn, PutFavoriteProductRequest request) {
         validateAccount(request.account());
-        return favoriteProductRepository.putFavoriteProduct(
+        String userId = favoriteProductRepository.getUserIdBySn(sn);
+        long updatedSn = favoriteProductRepository.putFavoriteProduct(
                 sn,
                 request.productNo(),
                 request.purchaseQuantity(),
                 request.account());
+        if (userId != null) {
+            evictUserCache(userId);
+        }
+        return updatedSn;
     }
 
     // 刪除商品商業邏輯
     @Override
     public boolean deleteFavoriteProduct(long sn) {
-        return favoriteProductRepository.deleteFavoriteProduct(sn);
+        String userId = favoriteProductRepository.getUserIdBySn(sn);
+        boolean deleted = favoriteProductRepository.deleteFavoriteProduct(sn);
+        if (userId != null) {
+            evictUserCache(userId);
+        }
+        return deleted;
+    }
+
+    private void evictUserCache(String userId) {
+        try {
+            redisTemplate.delete("cache:user_favorites:" + userId);
+        } catch (Exception e) {
+            // Ignore cache eviction errors
+        }
     }
 
     // 驗證邏輯

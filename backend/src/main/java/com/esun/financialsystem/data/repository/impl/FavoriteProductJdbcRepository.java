@@ -98,6 +98,18 @@ public class FavoriteProductJdbcRepository implements FavoriteProductRepository 
         return Boolean.TRUE.equals(deleted);
     }
 
+    @Override
+    public String getUserIdBySn(long sn) {
+        try {
+            return jdbcTemplate.queryForObject(
+                    "SELECT user_id FROM \"LikeList\" WHERE sn = ?",
+                    String.class,
+                    sn);
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+            return null;
+        }
+    }
+
     private String trimToNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
     }
