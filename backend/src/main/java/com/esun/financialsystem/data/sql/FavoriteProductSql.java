@@ -8,6 +8,12 @@ public final class FavoriteProductSql {
     public static final String GET_FAVORITE_PRODUCTS_BY_USER =
             "SELECT * FROM sp_get_favorite_products_by_user(?)";
 
+    public static final String GET_LIKE_LIST =
+            "SELECT * FROM sp_get_like_list(?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    public static final String COUNT_LIKE_LIST =
+            "SELECT sp_count_like_list(?, ?, ?, ?, ?)";
+
     public static final String UPDATE_FAVORITE_PRODUCT =
             "SELECT sp_update_favorite_product(?, ?, ?, ?)";
 

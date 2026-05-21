@@ -231,8 +231,8 @@ Nginx 設定（`frontend/nginx.conf`）：
 ### SQL Injection 防護
 
 - 所有 JDBC 查詢使用 `JdbcTemplate` + `?` 參數化查詢（PreparedStatement）
-- Favorite Product CUD 操作透過 PostgreSQL Stored Procedure，參數型別在函數簽名中定義
-- `ORDER BY` 欄位使用白名單（`allowedColumns` Map），排序方向僅允許 `ASC` / `DESC`
+- Favorite Product CUD 與 LikeList 查詢透過 PostgreSQL Stored Procedure，參數型別在函數簽名中定義
+- `ORDER BY` 欄位使用白名單或 Stored Procedure 內的固定 `CASE` 條件，排序方向僅允許 `ASC` / `DESC`
 
 ### XSS 防護
 
