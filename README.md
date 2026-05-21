@@ -7,7 +7,7 @@
 
 ---
 
-## 🚀 系統特色與架構亮點 (System Features)
+## 系統特色與架構亮點 (System Features)
 
 本系統不僅僅是 Spring Boot + Vue 的簡單應用，更融合了以下業界常見的微服務與高併發架構設計：
 
@@ -20,14 +20,39 @@
 
 ---
 
-## 📖 系統設計 (SD) 優化解析教材
+## 系統設計 (SD) 優化解析教材
 
 以下詳細說明本專案如何解決常見的系統設計問題，並標示了對應的程式碼位置供學習參考：
 
-### 1. 應對高併發讀取：Redis 快取與防止快取雪崩
-在高併發場景中，直接讀取資料庫會造成極大壓力。我們將使用者的最愛清單讀取加入 Redis 快取。
-為了解決**快取雪崩 (Cache Avalanche)** (即大量快取同時過期，導致請求瞬間湧入資料庫)，我們在設定快取時加入了隨機過期時間 (Jitter)。
-此外，我們也實作了**快取失效 (Cache Eviction)**，當資料被更新或刪除時，主動清除快取以避免讀到舊資料。
+### 1. 應對高併發讀取：Redis 快取緩衝層
+在高併發場景中，直接讀取資料庫會造成極大壓力。我們將使用者的最愛清單讀取加入 Redis 快取，作為資料庫前的緩衝層。當資料被更新或刪除時，我們會主動執行**快取失效 (Cache Eviction)**，以避免讀到舊資料。
+
+**快取讀取流程圖：**
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API Gateway
+    participant Spring Boot
+    participant Redis
+    participant PostgreSQL
+
+    Client->>API Gateway: GET /api/favorite-products/users/{id}
+    API Gateway->>Spring Boot: 轉發請求
+    Spring Boot->>Redis: 查詢 Cache (cache:user_favorites:{id})
+    alt Cache Hit (命中)
+        Redis-->>Spring Boot: 回傳 JSON 資料
+    else Cache Miss (未命中)
+        Redis-->>Spring Boot: 回傳 Null
+        Spring Boot->>PostgreSQL: 查詢 DB
+        PostgreSQL-->>Spring Boot: 回傳實體資料
+        Spring Boot->>Redis: 將資料寫入 Cache (並加上 TTL)
+    end
+    Spring Boot-->>API Gateway: 回傳結果
+    API Gateway-->>Client: 回傳 JSON 回應
+```
+
+### 2. 防止快取雪崩 (Cache Avalanche)
+為了解決大量快取同時過期，導致請求瞬間湧入穿透到資料庫的問題，我們在設定快取時加入了隨機過期時間 (Jitter)，將快取失效的時間點打散。
 
 * **程式碼標記**：
   * **寫入快取與隨機 TTL**：見 `backend/src/main/java/com/esun/financialsystem/business/service/impl/FavoriteProductServiceImpl.java` 內的 `getFavoriteProductsByUser` 方法。
@@ -38,10 +63,8 @@
     ```
   * **快取清除 (Eviction)**：見同檔案內的 `putFavoriteProduct` 與 `deleteFavoriteProduct` 方法呼叫的 `evictUserCache(userId)`。
 
-### 2. 避免重複提交與 Race Condition：Redis 冪等性 (Idempotency) 與 DB 行鎖
-當使用者因為網路延遲連續點擊新增按鈕時，系統可能會寫入重複資料。我們採用雙層防護：
-1. **Redis 冪等性**：利用 Redis 的 `setIfAbsent` (即 SETNX) 鎖住特定請求參數 10 秒鐘。
-2. **DB 行鎖 (Pessimistic Lock)**：在 PostgreSQL 存儲過程中，利用 `FOR UPDATE` 鎖住關聯的 `User` 與 `Product` 資料列，確保在高併發下，同一筆資料庫紀錄不會被交錯修改。
+### 3. 避免重複提交：Redis 冪等性 (Idempotency)
+當使用者因為網路延遲連續點擊新增按鈕時，系統可能會寫入重複資料。我們利用 Redis 的 `setIfAbsent` (即 SETNX) 鎖住特定請求參數 10 秒鐘。如果同一個請求在 10 秒內重複出現，系統會直接拒絕。
 
 * **程式碼標記**：
   * **Redis 冪等性檢查**：見 `FavoriteProductServiceImpl.java` 的 `postFavoriteProduct` 方法。
@@ -51,22 +74,53 @@
         throw new BadRequestException("Duplicate request, please try again later");
     }
     ```
+
+### 4. 防止 Race Condition：DB 行鎖 (Pessimistic Lock)
+在多個請求同時嘗試修改同一筆紀錄時，除了依賴前端或 Redis 的防護，我們在資料庫底層也加上了悲觀鎖 (Pessimistic Lock)。在 PostgreSQL 存儲過程中，利用 `FOR UPDATE` 鎖住關聯的 `User` 與 `Product` 資料列，確保在高併發下交易的強一致性。
+
+* **程式碼標記**：
   * **PostgreSQL FOR UPDATE 行鎖**：見 `db/03_procedures.sql` 的 `sp_add_favorite_product` 函數。
     ```sql
     PERFORM 1 FROM "User" AS u WHERE u.user_id = p_user_id FOR UPDATE;
     ```
 
-### 3. 資料庫查詢優化：解決 N+1 Query
-查詢關聯資料時（例如查詢 User 與其下的所有 Favorite Products），若使用傳統做法會產生 $1 + N$ 次查詢。我們改為在 PostgreSQL 內直接使用 `JSON_AGG` 將多筆商品聚合成 JSON 字串回傳，大幅減少 DB 連線次數與傳輸成本。
+### 5. 資料庫查詢優化：解決 N+1 Query
+查詢關聯資料時（例如查詢 User 與其下的所有 Favorite Products），若使用傳統做法會產生 1+N 次查詢。我們改為在 PostgreSQL 內直接使用 `JSON_AGG` 將多筆商品聚合成 JSON 字串回傳，大幅減少 DB 連線次數與傳輸成本。
 
-* **程式碼標記**：
+* **程式碼標記與範例寫法**：
   * **JSON_AGG 聚合查詢**：見 `db/03_procedures.sql` 的 `sp_get_like_list` 函數。
+    ```sql
+    SELECT
+        u.user_id,
+        CAST(
+            COALESCE(
+                JSON_AGG(
+                    JSON_BUILD_OBJECT(
+                        'sn', ll.sn,
+                        'productName', p.product_name,
+                        'price', p.price
+                    ) ORDER BY ll.sn
+                ), '[]'::json
+            ) AS TEXT
+        ) AS favorite_products
+    FROM "User" AS u
+    INNER JOIN "LikeList" AS ll ON ll.user_id = u.user_id
+    INNER JOIN "Product" AS p ON p.no = ll.product_no
+    GROUP BY u.user_id;
+    ```
 
-### 4. 系統限流保護：API Gateway (Kong) Rate Limiting
+### 6. 系統限流保護：API Gateway (Kong) Rate Limiting
 為了防止惡意攻擊或單一使用者過度消耗系統資源，我們在 Kong API Gateway 層級加上了 Rate Limiting 插件，設定每個 IP 每分鐘最多只能請求 120 次。
 
-* **程式碼標記**：
+* **程式碼標記與範例寫法**：
   * **限流設定**：見 `gateway/kong.yml` 中的 `plugins` 設定。
+    ```yaml
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 120
+          policy: local
+    ```
 
 ---
 
