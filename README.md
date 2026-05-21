@@ -6,7 +6,7 @@
 
 在銀行與金融服務場景中，系統通常需要同時面對大量使用者查詢、短時間內重複提交、資料一致性要求、API 流量控管，以及後續維護與擴充需求。
 
-例如，當使用者查詢自己的金融商品喜好清單時，系統可能會在短時間內收到大量讀取請求；當使用者新增或修改喜好金融商品時，系統也必須避免重複提交、資料錯亂或交易不一致。除此之外，金融系統也需要考量 SQL Injection、XSS、Rate Limiting、Transaction、資料庫效能與 CI 自動化檢查等工程議題。
+例如，當使用者查詢自己的金融商品喜好清單時，系統可能會在短時間內收到大量讀取請求；當使用者新增或修改喜好金融商品時，系統也必須避免重複提交、資料錯亂或交易不一致。除此之外，金融系統也需要考量 SQL Injection、XSS、Rate Limiting、Transaction、資料庫效能、CI 自動化檢查與系統可維護性等工程議題。
 
 因此，本專案不只完成一套金融商品喜好紀錄系統，也將它延伸為一個後端工程與系統設計學習範例，目標是打造一套具備以下特性的系統：
 
@@ -23,7 +23,18 @@
 
 本專案為一套金融商品喜好紀錄系統，使用者可以透過前端介面新增、查詢、修改與刪除自己偏好的金融商品，並由系統計算預計扣款總金額與總手續費用。
 
-本系統以玉山銀行後端工程師 Java 實作題為基礎，依照題目要求完成 Vue.js 前端、Spring Boot 後端、RESTful API、Maven 專案、Stored Procedure、Transaction、SQL Injection 防護、XSS 防護，以及三層式架構設計。題目要求系統需使用 Web Server、Application Server 與任一關聯式資料庫組成三層式架構，後端需依需求設計展示層、業務層、資料層與共用層。 [oai_citation:0‡【新進Java】玉山銀行後端工程師實作題E.pdf](sediment://file_00000000c5b47207b6a6c6c7138afce3)
+本系統以玉山銀行後端工程師 Java 實作題為基礎，依照題目要求完成：
+
+- Vue.js 前端
+- Spring Boot 後端
+- RESTful API
+- Maven 專案
+- Stored Procedure
+- Transaction
+- SQL Injection 防護
+- XSS 防護
+- Web Server + Application Server + 關聯式資料庫的三層式架構
+- 展示層、業務層、資料層、共用層的後端分層設計
 
 在完成基本功能後，本專案進一步加入多項常見的系統設計優化：
 
@@ -64,31 +75,46 @@
 
 ### 1. 銀行場景導向的三層式架構
 
-本系統符合 Web Server、Application Server、Database 的三層式架構設計：
+本系統符合 Web Server、Application Server、Database 的三層式架構設計。前端由 Vue 3 建立使用者操作介面，Nginx 負責靜態資源與反向代理，Kong 作為 API Gateway，Spring Boot 負責商業邏輯與資料處理，PostgreSQL 作為主要關聯式資料庫，Redis 則負責快取、冪等性與非同步佇列。
 
-```txt
-Browser
-   |
-   v
-Nginx Web Server
-   |
-   v
-Kong API Gateway
-   |
-   v
-Spring Boot Application Server
-   |
-   v
-PostgreSQL / Redis
+```mermaid
+flowchart TD
+    Client[Browser / 使用者] --> Web[Nginx Web Server]
+    Web --> Gateway[Kong API Gateway]
+    Gateway --> App[Spring Boot Application Server]
+    App --> DB[(PostgreSQL Database)]
+    App --> Redis[(Redis Cache / Queue)]
 ```
 
-前端由 Vue 3 建立使用者操作介面，Nginx 負責靜態資源與反向代理，Kong 作為 API Gateway，Spring Boot 負責商業邏輯與資料處理，PostgreSQL 作為主要關聯式資料庫，Redis 則負責快取、冪等性與非同步佇列。
+### 設計重點
+
+| 層級 | 元件 | 職責 |
+|---|---|---|
+| Web Server | Nginx | 提供 Vue 靜態檔案，並將 API 請求反向代理至 Kong |
+| API Gateway | Kong | 統一 API 入口、限流、負載均衡 |
+| Application Server | Spring Boot | 處理商業邏輯、資料驗證、快取、Queue、DB 存取 |
+| Database | PostgreSQL | 儲存核心資料，透過 Stored Procedure 與 Transaction 確保一致性 |
+| Cache / Queue | Redis | 快取查詢結果、處理冪等性、暫存寫入任務 |
 
 ---
 
 ### 2. 清楚的後端分層設計
 
-後端依照題目要求拆分為展示層、業務層、資料層與共用層：
+後端依照題目要求拆分為展示層、業務層、資料層與共用層，降低 Controller、Service 與 Repository 之間的耦合，使系統更容易維護、測試與擴充。
+
+```mermaid
+flowchart TD
+    Controller[Presentation Layer<br/>Controller / Request / Response]
+    Service[Business Layer<br/>Service / Business Logic / Worker]
+    Repository[Data Layer<br/>Repository / Stored Procedure Call]
+    Common[Common Layer<br/>Exception / Utils / Shared Components]
+    Database[(PostgreSQL / Redis)]
+
+    Controller --> Service
+    Service --> Repository
+    Service --> Common
+    Repository --> Database
+```
 
 | 層級 | 對應 Package | 職責 |
 |---|---|---|
@@ -97,25 +123,22 @@ PostgreSQL / Redis
 | 資料層 Data | `data` | Repository、Stored Procedure 呼叫、資料存取 |
 | 共用層 Common | `common` | Exception、錯誤處理、共用工具 |
 
-這樣的分層可以降低 Controller 與資料庫邏輯耦合，讓系統更容易維護、測試與擴充。
-
 ---
 
 ### 3. 高併發讀取保護
 
 金融系統常見的查詢操作，例如使用者查看商品清單、帳戶資訊或交易紀錄，通常會遠多於寫入操作。
 
-因此本系統對使用者喜好商品查詢加入 Redis Cache：
+因此本系統對使用者喜好商品查詢加入 Redis Cache。讀取時先查 Redis，如果快取命中就直接回傳；如果快取未命中，才查 PostgreSQL 並將結果回填 Redis。
 
-```txt
-Client Request
-   |
-   v
-Check Redis Cache
-   |
-   |-- Cache Hit  -> Return directly
-   |
-   |-- Cache Miss -> Query PostgreSQL -> Write back Redis -> Return
+```mermaid
+flowchart TD
+    A[Client 查詢喜好商品] --> B[Spring Boot Backend]
+    B --> C{Redis Cache 是否存在?}
+    C -->|Cache Hit| D[直接回傳快取資料]
+    C -->|Cache Miss| E[查詢 PostgreSQL]
+    E --> F[回填 Redis Cache]
+    F --> G[回傳查詢結果]
 ```
 
 此設計可以大幅降低 PostgreSQL 在高併發讀取時的壓力。
@@ -128,41 +151,49 @@ Check Redis Cache
 
 本專案在新增、修改、刪除喜好商品時，使用 Stored Procedure 與 Transaction 處理多表異動，並在必要情境使用 PostgreSQL `FOR UPDATE` 鎖住資料列，避免多個請求同時修改同一筆資料造成 Race Condition。
 
+```mermaid
+flowchart TD
+    A[寫入 / 修改 / 刪除請求] --> B[開始 Transaction]
+    B --> C[鎖定必要資料列 FOR UPDATE]
+    C --> D[執行 Stored Procedure]
+    D --> E{執行是否成功?}
+    E -->|成功| F[Commit]
+    E -->|失敗| G[Rollback]
+```
+
 ---
 
 ### 5. 防止重複提交
 
 使用者可能因為網路延遲、連續點擊或重送請求，導致同一筆新增操作被送出多次。
 
-本系統使用 Redis `SETNX` 建立短時間的 Idempotency Key：
+本系統使用 Redis `SETNX` 建立短時間的 Idempotency Key。若同一個請求在 10 秒內重複出現，Redis 會拒絕第二次寫入，後端就可以判斷這是一筆重複請求。
 
-```txt
-Same request within 10 seconds
-   |
-   v
-Redis SETNX failed
-   |
-   v
-Reject duplicate request
+```mermaid
+flowchart TD
+    A[收到新增請求] --> B[產生 Idempotency Key]
+    B --> C[Redis SETNX]
+    C --> D{是否寫入成功?}
+    D -->|成功| E[接受請求並進入後續流程]
+    D -->|失敗| F[拒絕重複提交]
 ```
-
-這可以避免短時間內重複新增同一筆喜好商品。
 
 ---
 
 ### 6. API Gateway 流量控管
 
-所有外部 API 請求都會先經過 Kong API Gateway。
+所有外部 API 請求都會先經過 Kong API Gateway。Kong 負責統一 API 入口、Rate Limiting、L7 Routing、Round-robin Load Balancing，並在進入應用層之前先做第一層流量保護。
 
-Kong 負責：
+```mermaid
+flowchart LR
+    Client[Client] --> Kong[Kong API Gateway]
+    Kong --> RateLimit[Rate Limiting]
+    RateLimit --> LB[Round-robin Load Balancing]
+    LB --> Backend1[Spring Boot Backend 1]
+    LB --> Backend2[Spring Boot Backend 2]
+```
 
-- 統一 API 入口
-- Rate Limiting
-- L7 Routing
-- Round-robin Load Balancing
-- 保護後端服務
-
-此設計可避免所有請求直接打到 Spring Boot 後端，並在進入應用層之前先做第一層流量保護。
+此設計可避免所有請求直接打到 Spring Boot 後端，降低單一服務被大量請求壓垮的風險。
 
 ---
 
@@ -170,19 +201,16 @@ Kong 負責：
 
 在高併發寫入場景中，如果每個 API 請求都直接寫入 DB，資料庫可能會在短時間內承受大量 transaction。
 
-因此本系統將新增喜好商品流程設計為：
+因此本系統將新增喜好商品流程設計為 API 先接收請求，通過檢查後推入 Redis Queue，並立即回傳 Accepted。真正的 DB 寫入由 Worker 背景處理。
 
-```txt
-API 接收請求
-   |
-   v
-Redis Queue
-   |
-   v
-立即回傳 Accepted
-   |
-   v
-Worker 背景寫入 PostgreSQL
+```mermaid
+flowchart TD
+    A[大量新增請求] --> B[Spring Boot API]
+    B --> C[Redis Queue]
+    B --> D[立即回傳 202 Accepted]
+    C --> E[Background Worker]
+    E --> F[Stored Procedure]
+    F --> G[(PostgreSQL)]
 ```
 
 這種設計讓 API 層快速回應，真正的 DB 寫入由 Worker 以穩定速度處理，降低資料庫瞬間壓力。
@@ -190,6 +218,10 @@ Worker 背景寫入 PostgreSQL
 ---
 
 ## 整體系統架構圖
+
+本系統採用前後端分離與三層式架構，並在傳統 Web Server、Application Server、Database 架構之上，額外加入 API Gateway、Redis 與 Background Worker。
+
+這張圖主要說明一個使用者請求從瀏覽器進入系統後，會經過哪些元件，以及每個元件在系統中扮演什麼角色。
 
 ```mermaid
 flowchart LR
@@ -210,11 +242,27 @@ flowchart LR
     Worker --> DB
 ```
 
+### 架構設計重點
+
+| 元件 | 職責 | 設計目的 |
+|---|---|---|
+| Browser | 使用者操作介面 | 提供金融商品喜好清單的新增、查詢、修改、刪除 |
+| Nginx | Web Server / Reverse Proxy | 提供 Vue 靜態檔案，並將 API 請求轉送至 Gateway |
+| Kong API Gateway | API Gateway | 統一 API 入口、限流、負載均衡，避免請求直接打到後端 |
+| Spring Boot Backend | Application Server | 處理商業邏輯、資料驗證、快取、冪等性與 DB 存取 |
+| Redis | Cache / Queue / Idempotency | 降低 DB 壓力、避免重複提交、暫存高峰寫入任務 |
+| PostgreSQL | Relational Database | 儲存核心資料，透過 Stored Procedure 與 Transaction 確保一致性 |
+| Background Worker | Queue Consumer | 背景消化 Redis Queue，將寫入流量平滑送入 DB |
+
 ---
 
 ## 核心請求流程
 
 ### 查詢喜好商品：Cache Aside Pattern
+
+在金融系統中，查詢類操作通常會遠多於寫入操作。例如使用者可能頻繁查看自己的金融商品喜好清單，如果每次查詢都直接進入 PostgreSQL，資料庫會承受大量重複讀取壓力。
+
+因此本系統在查詢使用者喜好商品時採用 Cache Aside Pattern。後端會先查 Redis，若 Redis 已有資料，代表 Cache Hit，可直接回傳；若 Redis 沒有資料，才會查詢 PostgreSQL，並將查詢結果回填到 Redis，供後續請求使用。
 
 ```mermaid
 sequenceDiagram
@@ -246,9 +294,40 @@ sequenceDiagram
     end
 ```
 
+### 流程說明
+
+| 步驟 | 說明 |
+|---|---|
+| 1 | 使用者從前端送出查詢喜好商品請求 |
+| 2 | Nginx 將 `/api/*` 請求轉發給 Kong |
+| 3 | Kong 進行限流與負載均衡後，轉發至 Spring Boot Backend |
+| 4 | Backend 先查 Redis 是否已有該使用者的喜好商品快取 |
+| 5 | 若 Cache Hit，直接回傳 Redis 中的 JSON 資料 |
+| 6 | 若 Cache Miss，Backend 呼叫 PostgreSQL Stored Procedure 查詢資料 |
+| 7 | DB 回傳結果後，Backend 將資料寫入 Redis 並設定 TTL + Jitter |
+| 8 | Backend 將結果回傳給前端 |
+
+### 設計重點
+
+- Redis 作為 DB 前方的快取層，可以減少重複查詢。
+- Cache Miss 時才查詢 PostgreSQL，可以降低 DB 負載。
+- 寫入 Redis 時加入 TTL + Jitter，可以避免大量快取同時失效。
+- 修改或刪除資料後會主動清除快取，避免使用者讀到舊資料。
+
 ---
 
 ### 新增喜好商品：Idempotency + Async Queue
+
+新增喜好商品屬於寫入操作，寫入操作比查詢更需要注意資料一致性與重複提交問題。
+
+在實際金融系統中，使用者可能因為網路延遲、按鈕連點、瀏覽器重送請求，導致同一筆新增操作被送出多次。如果後端沒有防護，就可能產生重複資料。
+
+另一方面，若大量使用者在短時間內同時新增資料，每個 API request 都直接寫入 PostgreSQL，也可能造成資料庫連線與 Transaction 壓力暴增。
+
+因此本系統將新增流程拆成兩層保護：
+
+1. Idempotency：使用 Redis `SETNX` 避免短時間重複提交。
+2. Async Queue：通過檢查後先推入 Redis Queue，由 Worker 背景寫入 DB。
 
 ```mermaid
 sequenceDiagram
@@ -276,9 +355,36 @@ sequenceDiagram
     end
 ```
 
+### 流程說明
+
+| 步驟 | 說明 |
+|---|---|
+| 1 | 使用者送出新增喜好商品請求 |
+| 2 | Backend 根據請求內容產生 Idempotency Key |
+| 3 | Backend 使用 Redis `SETNX` 檢查是否為短時間重複提交 |
+| 4 | 若 Redis 回傳 false，代表已有相同請求正在處理或剛處理過，直接拒絕 |
+| 5 | 若 Redis 回傳 true，代表此請求可被接受 |
+| 6 | Backend 將請求資料推入 Redis Queue |
+| 7 | API 先回傳 `202 Accepted`，避免使用者等待 DB 寫入完成 |
+| 8 | Worker 從 Redis Queue 取出任務 |
+| 9 | Worker 呼叫 PostgreSQL Stored Procedure 寫入資料 |
+| 10 | 寫入成功後清除該使用者相關 Cache，避免後續查詢讀到舊資料 |
+
+### 設計重點
+
+- `SETNX` 可以避免短時間重複提交。
+- Redis Queue 可以吸收瞬間寫入流量。
+- Worker 背景處理可以降低 API response time。
+- DB 寫入仍由 Stored Procedure 與 Transaction 保證資料一致性。
+- 寫入成功後清除 cache，確保後續查詢會重新取得最新資料。
+
 ---
 
 ### 修改 / 刪除喜好商品：Transaction + Cache Eviction
+
+修改與刪除屬於會影響既有資料的操作，因此系統需要確保 DB 異動成功後，使用者下次查詢不能再讀到舊的 Redis Cache。
+
+本流程的重點是先完成資料庫交易，再進行 cache eviction。若 DB 更新失敗，transaction 會 rollback，不會清除 cache；若 DB 更新成功，才清除該使用者相關快取。
 
 ```mermaid
 flowchart TD
@@ -290,6 +396,26 @@ flowchart TD
     E -->|Yes| G[Evict Redis Cache]
     G --> H[Return Success Response]
 ```
+
+### 流程說明
+
+| 步驟 | 說明 |
+|---|---|
+| 1 | 使用者送出修改或刪除請求 |
+| 2 | Backend 驗證 request 格式與必要欄位 |
+| 3 | Backend 呼叫 Stored Procedure |
+| 4 | PostgreSQL 在 Transaction 中執行資料異動 |
+| 5 | 若發生錯誤則 rollback，回傳錯誤 |
+| 6 | 若異動成功則 commit |
+| 7 | Backend 清除該使用者的 Redis Cache |
+| 8 | 回傳成功結果給前端 |
+
+### 設計重點
+
+- DB transaction 是資料正確性的核心。
+- Cache eviction 必須在 DB 更新成功後才執行。
+- 若先清 cache 但 DB 更新失敗，可能造成不必要的 cache miss。
+- 若 DB 成功但不清 cache，使用者可能會讀到舊資料。
 
 ---
 
@@ -305,6 +431,16 @@ flowchart TD
 
 本系統使用 Redis 作為資料庫前方的快取緩衝層。當使用者查詢喜好商品時，後端會先查 Redis；若 Redis 有資料，直接回傳；若沒有資料，才查 PostgreSQL 並將結果寫回 Redis。
 
+```mermaid
+flowchart TD
+    A[查詢請求] --> B[查 Redis]
+    B --> C{Cache Hit?}
+    C -->|Yes| D[回傳快取資料]
+    C -->|No| E[查 PostgreSQL]
+    E --> F[寫入 Redis]
+    F --> G[回傳資料]
+```
+
 對應位置：
 
 ```txt
@@ -317,20 +453,12 @@ backend/src/main/java/com/esun/financialsystem/business/service/impl/FavoritePro
 
 如果所有 cache 都設定固定 5 分鐘過期，可能會在同一時間大量失效，導致所有請求瞬間打到資料庫。
 
-因此本系統採用：
-
-```txt
-基礎 TTL + 隨機 TTL
-```
-
-範例：
+因此本系統採用「基礎 TTL + 隨機 TTL」的方式，讓 cache 在不同時間點過期，避免資料庫在某個時間點突然承受大量 cache miss。
 
 ```java
 long ttlSeconds = 300 + ThreadLocalRandom.current().nextInt(301);
 redisTemplate.opsForValue().set(cacheKey, jsonData, ttlSeconds, TimeUnit.SECONDS);
 ```
-
-也就是讓 cache 在 300 到 600 秒之間隨機過期，避免同時間集中失效。
 
 ```mermaid
 flowchart LR
@@ -359,15 +487,22 @@ if (Boolean.FALSE.equals(success)) {
 }
 ```
 
-此設計可以避免短時間內相同請求被重複處理。
+```mermaid
+flowchart TD
+    A[收到 POST Request] --> B[產生 Idempotency Key]
+    B --> C[Redis SETNX]
+    C --> D{SETNX 成功?}
+    D -->|Yes| E[接受請求]
+    D -->|No| F[拒絕重複請求]
+```
 
-進一步的 production 強化方向：
+目前此設計屬於簡化版冪等性，主要用於避免短時間重複提交。若要進一步接近正式金融系統，可以擴充為：
 
-- 前端傳入 `Idempotency-Key`
-- 後端儲存 request hash
+- 由前端傳入 `Idempotency-Key`
+- 儲存 request hash
 - 儲存 response snapshot
-- 設計 PROCESSING / SUCCESS / FAILED 狀態
 - 支援第一次成功但 response timeout 時的結果重放
+- 設計 request 狀態：PROCESSING / SUCCESS / FAILED
 
 ---
 
@@ -383,8 +518,6 @@ FROM "User" AS u
 WHERE u.user_id = p_user_id
 FOR UPDATE;
 ```
-
-流程如下：
 
 ```mermaid
 sequenceDiagram
@@ -405,21 +538,32 @@ sequenceDiagram
     R2->>DB: Continue update
 ```
 
+這樣可以確保同一時間只有一個 transaction 能修改相關資料，避免資料不一致。
+
 ---
 
 ### 5. JSON_AGG：解決 N+1 Query
 
 若使用傳統 ORM 查詢關聯資料，可能會出現：
 
-```txt
-查 User 一次
-查 LikeList N 次
-查 Product N 次
-```
+- 查 User 一次
+- 查 LikeList N 次
+- 查 Product N 次
 
 這會造成大量 DB round trip。
 
 本系統改由 PostgreSQL 使用 `JSON_AGG` 與 `JSON_BUILD_OBJECT` 一次聚合使用者與喜好商品資料。
+
+```mermaid
+flowchart TD
+    A[傳統 ORM 查詢] --> B[查 User]
+    B --> C[查 LikeList N 次]
+    C --> D[查 Product N 次]
+    D --> E[大量 DB Round Trip]
+
+    F[JSON_AGG 聚合查詢] --> G[單次 SQL 聚合 User + LikeList + Product]
+    G --> H[直接回傳接近前端需要的 JSON]
+```
 
 優點：
 
@@ -432,13 +576,15 @@ sequenceDiagram
 
 ### 6. Kong API Gateway：Rate Limiting 與 Load Balancing
 
-本系統使用 Kong Gateway 作為 API Gateway。
+本系統使用 Kong Gateway 作為 API Gateway。所有外部 API 請求會先進入 Kong，再由 Kong 分派到後端服務。
 
 ```mermaid
 flowchart LR
     Client[Client] --> Kong[Kong API Gateway]
-    Kong --> Backend1[Backend Instance 1]
-    Kong --> Backend2[Backend Instance 2]
+    Kong --> Plugin[Rate Limiting Plugin]
+    Plugin --> Upstream[Upstream Service]
+    Upstream --> Backend1[Backend Instance 1]
+    Upstream --> Backend2[Backend Instance 2]
 ```
 
 Rate Limiting 設定範例：
@@ -459,8 +605,6 @@ plugins:
 
 本系統針對常見的 WHERE、JOIN、ORDER BY 欄位建立索引。
 
-範例：
-
 ```sql
 CREATE INDEX IF NOT EXISTS idx_like_list_user_id_sn
     ON "LikeList" (user_id, sn);
@@ -470,6 +614,13 @@ CREATE INDEX IF NOT EXISTS idx_like_list_product_no
 
 CREATE INDEX IF NOT EXISTS idx_product_price
     ON "Product" (price);
+```
+
+```mermaid
+flowchart TD
+    A[查詢條件 / JOIN / ORDER BY] --> B{是否有適合索引?}
+    B -->|有| C[使用 Index Scan<br/>降低查詢成本]
+    B -->|無| D[可能 Full Table Scan<br/>查詢成本提高]
 ```
 
 索引用途：
@@ -488,7 +639,7 @@ CREATE INDEX IF NOT EXISTS idx_product_price
 
 大量寫入請求如果直接進 DB，可能造成資料庫連線與 transaction 壓力暴增。
 
-本系統使用 Redis Queue 暫存寫入任務，並由 Worker 背景消化：
+本系統使用 Redis Queue 暫存寫入任務，並由 Worker 背景消化。
 
 ```mermaid
 flowchart TD
@@ -561,11 +712,20 @@ sequenceDiagram
 
 因此本系統在查詢清單時加入 Pagination。
 
-範例：
-
 ```sql
 LIMIT COALESCE(NULLIF(p_page_size, 0), 10)
 OFFSET GREATEST(COALESCE(p_offset, 0), 0);
+```
+
+```mermaid
+flowchart TD
+    A[大量資料查詢] --> B{是否使用 Pagination?}
+    B -->|否| C[一次撈出大量資料]
+    C --> D[DB / API / 前端負載增加]
+
+    B -->|是| E[限制 page size]
+    E --> F[分批查詢]
+    F --> G[降低單次查詢與回應壓力]
 ```
 
 並搭配總數查詢：
