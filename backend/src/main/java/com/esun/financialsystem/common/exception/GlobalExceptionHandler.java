@@ -1,6 +1,6 @@
-package com.esun.financialsystem.exception;
+package com.esun.financialsystem.common.exception;
 
-import com.esun.financialsystem.dto.response.ApiErrorResponse;
+import com.esun.financialsystem.presentation.response.ApiErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.time.LocalDateTime;

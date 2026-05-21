@@ -1,11 +1,11 @@
-package com.esun.financialsystem.service.impl;
+package com.esun.financialsystem.business.service.impl;
 
-import com.esun.financialsystem.dto.request.AddFavoriteProductRequest;
-import com.esun.financialsystem.dto.request.UpdateFavoriteProductRequest;
-import com.esun.financialsystem.dto.response.FavoriteProductResponse;
-import com.esun.financialsystem.exception.BadRequestException;
-import com.esun.financialsystem.repository.FavoriteProductRepository;
-import com.esun.financialsystem.service.FavoriteProductService;
+import com.esun.financialsystem.presentation.request.AddFavoriteProductRequest;
+import com.esun.financialsystem.presentation.request.UpdateFavoriteProductRequest;
+import com.esun.financialsystem.presentation.response.FavoriteProductResponse;
+import com.esun.financialsystem.common.exception.BadRequestException;
+import com.esun.financialsystem.data.repository.FavoriteProductRepository;
+import com.esun.financialsystem.business.service.FavoriteProductService;
 import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;

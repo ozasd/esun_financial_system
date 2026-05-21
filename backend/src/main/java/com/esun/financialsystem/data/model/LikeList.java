@@ -1,21 +1,16 @@
-package com.esun.financialsystem.dto.response;
+package com.esun.financialsystem.data.model;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-public record FavoriteProductResponse(
+public record LikeList(
         Long sn,
-        String userId,
-        String userName,
-        String email,
-        Long productNo,
-        String productName,
-        BigDecimal price,
-        BigDecimal feeRate,
         Integer purchaseQuantity,
         String account,
         BigDecimal totalFee,
         BigDecimal totalAmount,
+        String userId,
+        Long productNo,
         LocalDateTime createdAt,
         LocalDateTime updatedAt) {
 }

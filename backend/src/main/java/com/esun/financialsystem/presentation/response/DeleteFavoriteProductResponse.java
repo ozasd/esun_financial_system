@@ -1,4 +1,4 @@
-package com.esun.financialsystem.dto.response;
+package com.esun.financialsystem.presentation.response;
 
 public record DeleteFavoriteProductResponse(boolean deleted) {
 }

@@ -1,6 +1,6 @@
-package com.esun.financialsystem.repository;
+package com.esun.financialsystem.data.repository;
 
-import com.esun.financialsystem.dto.response.FavoriteProductResponse;
+import com.esun.financialsystem.presentation.response.FavoriteProductResponse;
 import java.util.List;
 
 public interface FavoriteProductRepository {

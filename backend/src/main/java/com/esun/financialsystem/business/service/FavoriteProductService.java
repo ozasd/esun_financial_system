@@ -1,8 +1,8 @@
-package com.esun.financialsystem.service;
+package com.esun.financialsystem.business.service;
 
-import com.esun.financialsystem.dto.request.AddFavoriteProductRequest;
-import com.esun.financialsystem.dto.request.UpdateFavoriteProductRequest;
-import com.esun.financialsystem.dto.response.FavoriteProductResponse;
+import com.esun.financialsystem.presentation.request.AddFavoriteProductRequest;
+import com.esun.financialsystem.presentation.request.UpdateFavoriteProductRequest;
+import com.esun.financialsystem.presentation.response.FavoriteProductResponse;
 import java.util.List;
 
 public interface FavoriteProductService {

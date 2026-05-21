@@ -1,11 +1,11 @@
-package com.esun.financialsystem.controller;
+package com.esun.financialsystem.presentation.controller;
 
-import com.esun.financialsystem.dto.request.AddFavoriteProductRequest;
-import com.esun.financialsystem.dto.request.UpdateFavoriteProductRequest;
-import com.esun.financialsystem.dto.response.DeleteFavoriteProductResponse;
-import com.esun.financialsystem.dto.response.FavoriteProductMutationResponse;
-import com.esun.financialsystem.dto.response.FavoriteProductResponse;
-import com.esun.financialsystem.service.FavoriteProductService;
+import com.esun.financialsystem.presentation.request.AddFavoriteProductRequest;
+import com.esun.financialsystem.presentation.request.UpdateFavoriteProductRequest;
+import com.esun.financialsystem.presentation.response.DeleteFavoriteProductResponse;
+import com.esun.financialsystem.presentation.response.FavoriteProductMutationResponse;
+import com.esun.financialsystem.presentation.response.FavoriteProductResponse;
+import com.esun.financialsystem.business.service.FavoriteProductService;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.HttpStatus;

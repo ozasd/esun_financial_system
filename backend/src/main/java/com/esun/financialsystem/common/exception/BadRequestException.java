@@ -1,4 +1,4 @@
-package com.esun.financialsystem.exception;
+package com.esun.financialsystem.common.exception;
 
 public class BadRequestException extends RuntimeException {
 

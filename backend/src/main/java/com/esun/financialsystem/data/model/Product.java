@@ -1,4 +1,4 @@
-package com.esun.financialsystem.domain;
+package com.esun.financialsystem.data.model;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;

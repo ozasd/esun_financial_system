@@ -1,4 +1,4 @@
-package com.esun.financialsystem.dto.request;
+package com.esun.financialsystem.presentation.request;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
