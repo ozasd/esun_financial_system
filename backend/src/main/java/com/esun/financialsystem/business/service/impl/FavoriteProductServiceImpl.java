@@ -12,6 +12,7 @@ import com.esun.financialsystem.business.service.FavoriteProductService;
 import java.util.Set;
 import java.util.List;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 // @Service
@@ -42,6 +43,7 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
     // 2. 呼叫 Repository
     // 3. Repository 再去操作 DB
     @Override
+    @Transactional
     public long postFavoriteProduct(PostFavoriteProductRequest request) {
         // 驗證 userId
         validateUserId(request.userId());
@@ -81,6 +83,7 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
 
     // 更新商品商業邏輯
     @Override
+    @Transactional
     public long putFavoriteProduct(long sn, PutFavoriteProductRequest request) {
         validateAccount(request.account());
         return favoriteProductRepository.putFavoriteProduct(
@@ -92,6 +95,7 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
 
     // 刪除商品商業邏輯
     @Override
+    @Transactional
     public boolean deleteFavoriteProduct(long sn) {
         return favoriteProductRepository.deleteFavoriteProduct(sn);
     }

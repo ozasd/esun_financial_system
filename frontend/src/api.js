@@ -8,6 +8,22 @@ const api = axios.create({
   },
 })
 
+function createIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+api.interceptors.request.use((config) => {
+  const method = config.method?.toLowerCase()
+  if (['post', 'put', 'patch', 'delete'].includes(method)) {
+    config.headers = config.headers || {}
+    config.headers['Idempotency-Key'] = config.headers['Idempotency-Key'] || createIdempotencyKey()
+  }
+  return config
+})
+
 // ─── User API ───
 export const userApi = {
   getUsers(params = {}) {

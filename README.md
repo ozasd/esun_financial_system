@@ -2,7 +2,7 @@
 
 ## 專案簡介
 
-本專案為一套金融商品喜好紀錄系統，採用前後端分離架構。後端以 Spring Boot + PostgreSQL 提供 RESTful API，前端以 Vue 3 + Vite 建置單頁應用，透過 Nginx 做反向代理與靜態資源伺服器，整合於 Docker Compose 一鍵啟動。
+本專案為一套金融商品喜好紀錄系統，採用前後端分離架構。後端以 Spring Boot + PostgreSQL 提供 RESTful API，前端以 Vue 3 + Vite 建置單頁應用，透過 Nginx 提供靜態資源，並以 Kong API Gateway 做 L7 負載均衡與 API 限流，整合於 Docker Compose 一鍵啟動。
 
 ## 專案結構
 
@@ -28,14 +28,16 @@
 │   │       └── ProductPanel.vue    商品管理 CRUD
 │   ├── nginx.conf           Nginx 反向代理設定
 │   └── Dockerfile           Multi-stage build（Node → Nginx）
-└── docker-compose.yml       三服務容器編排
+├── gateway/               Kong DB-less 宣告式設定
+│   └── kong.yml
+└── docker-compose.yml       多服務容器編排
 ```
 
 ## 系統架構
 
 ```txt
 瀏覽器 → Nginx (:3000) ─┬─ /*      → Vue SPA 靜態檔案
-                        └─ /api/* → proxy_pass → Spring Boot (:8080) → PostgreSQL (:5432)
+                        └─ /api/* → Kong (:8000) → Spring Boot backend x2 (:8080) → PostgreSQL (:5432)
 ```
 
 ### 技術棧
@@ -44,6 +46,7 @@
 |------|------|
 | 前端 | Vue 3、Vite、Axios |
 | Web Server | Nginx 1.27（反向代理 + 靜態資源） |
+| API Gateway | Kong Gateway（DB-less mode、L7 Round-robin、Rate Limiting） |
 | 後端 | Java 17、Spring Boot 3、Spring Web、Spring JDBC |
 | 資料庫 | PostgreSQL 16、Stored Procedure |
 | 建置工具 | Maven（後端）、npm（前端） |
@@ -93,6 +96,19 @@ backend/src/main/java/com/esun/financialsystem
 - `total_fee`
 - `total_amount`
 
+### 資料庫效能優化
+
+- LikeList 查詢使用 `JSON_AGG` 聚合收藏商品，避免逐筆查詢造成 N+1 query。
+- Join 與常用篩選欄位建立索引，例如 `LikeList(user_id, sn)`、`LikeList(product_no)`、`LikeList(account)`。
+- User / Product 常用排序與範圍查詢欄位建立索引，例如 `user_name`、`email`、`price`、`fee_rate`、`created_at`。
+
+### 交易一致性與併發控制
+
+- Favorite Product 新增、修改、刪除由 PostgreSQL Stored Procedure 執行，資料異動集中在資料庫端。
+- Service mutation 方法使用 Spring `@Transactional`，確保同一次異動在交易內完成。
+- Stored Procedure 針對異動相關資料使用 `SELECT ... FOR UPDATE` 鎖定 row，避免高併發下同一筆資料被重複或交錯更新。
+- 前端針對 `POST`、`PUT`、`PATCH`、`DELETE` 自動帶入 `Idempotency-Key` header，後續可接 Redis 或資料庫表做重複請求判斷。
+
 ### PostgreSQL 連線設定
 
 ```txt
@@ -109,7 +125,7 @@ Password: EsunFinanceDB_2026!Secure
 
 ### 方式一：Docker Compose 全套啟動（推薦）
 
-一鍵啟動 PostgreSQL + Spring Boot + Nginx 前端：
+一鍵啟動 PostgreSQL + 兩個 Spring Boot backend + Kong + Nginx 前端：
 
 ```sh
 docker compose up -d --build
@@ -120,6 +136,8 @@ docker compose up -d --build
 | 服務 | 網址 |
 |------|------|
 | 前端（Nginx） | http://localhost:3000 |
+| Kong API Gateway | http://localhost:8000 |
+| Kong Admin API | http://localhost:8001 |
 | 後端 API（直接） | http://localhost:8081 |
 | PostgreSQL | localhost:5432 |
 
@@ -128,10 +146,10 @@ docker compose up -d --build
 適合前端開發時使用，Vite Dev Server 提供 HMR 熱更新：
 
 ```sh
-# 1. 啟動資料庫與後端
-docker compose up -d postgres backend
+# 1. 啟動資料庫、後端與 Kong
+docker compose up -d postgres backend kong
 
-# 2. 啟動前端 dev server（Vite proxy 自動轉發 /api → localhost:8081）
+# 2. 啟動前端 dev server（Vite proxy 自動轉發 /api → localhost:8000）
 cd frontend
 npm install
 npm run dev
@@ -155,6 +173,9 @@ mvn spring-boot:run
 | 項目 | 值 |
 |------|----|
 | Backend Port | 8081（Docker 對外）/ 8080（容器內） |
+| Backend Replica Port | 8082（Docker 對外）/ 8080（容器內） |
+| Kong Proxy Port | 8000 |
+| Kong Admin Port | 8001 |
 | Frontend Port | 3000（Nginx）/ 5173（Vite dev） |
 | DB URL | jdbc:postgresql://localhost:5432/esun_financial_system |
 | DB User | esun_app_user |
@@ -162,10 +183,10 @@ mvn spring-boot:run
 
 ## API 快速導覽
 
-後端預設 Base URL：
+API Gateway 預設 Base URL：
 
 ```txt
-http://localhost:8081
+http://localhost:8000
 ```
 
 ### Favorite Product（收藏商品）API
@@ -218,13 +239,25 @@ GET /api/favorite-products/like-list?page=1&pageSize=10&keyword=王&sortBy=user_
 |------|----------|------|------|
 | postgres | esun-financial-postgres | postgres:16.14-alpine | 5432 |
 | backend | esun-financial-backend | 自建（Maven + JDK 17） | 8081→8080 |
+| backend-replica | esun-financial-backend-replica | 自建（Maven + JDK 17） | 8082→8080 |
+| kong | esun-financial-kong | kong:3.9 | 8000、8001 |
 | frontend | esun-financial-frontend | 自建（Node build → Nginx 1.27） | 3000→80 |
 
 Nginx 設定（`frontend/nginx.conf`）：
 
-- `/ ` → 提供 Vue SPA 靜態檔案，搭配 `try_files` fallback
-- `/api/` → `proxy_pass http://backend:8080/api/`（反向代理）
+- `/` → 提供 Vue SPA 靜態檔案，搭配 `try_files` fallback
+- `/api/` → `proxy_pass http://kong:8000/api/`（經 Kong API Gateway 轉發）
 - 啟用 Gzip 壓縮與靜態資源快取
+
+Kong 設定（`gateway/kong.yml`）：
+
+- DB-less mode，不需要 Kong 自己的資料庫。
+- `/api/*` → `esun-backend-upstream`，以 Round-robin 分流到 `backend:8080` 與 `backend-replica:8080`。
+- `/actuator/*` → 同一組 backend upstream，用於健康檢查與除錯。
+- upstream active/passive health check 使用 `/actuator/health` 判斷 backend 是否可用。
+- `/api/*` 套用 rate limiting，每個來源 IP 每分鐘最多 120 次請求。
+- 目前限流使用 Kong local policy；單一 Kong instance 足夠，若未來部署多個 Kong 節點，可改用 Redis policy 共享限流狀態。
+- 目前不啟用認證、黑白名單等其他治理規則。
 
 ## 安全性設計
 
@@ -244,7 +277,7 @@ Nginx 設定（`frontend/nginx.conf`）：
 Example:
 
 ```bash
-curl "http://localhost:8081/api/users/A1236456789"
+curl "http://localhost:8000/api/users/A1236456789"
 ```
 
 #### `POST /api/users`
@@ -263,7 +296,7 @@ Request body:
 Example:
 
 ```bash
-curl -X POST "http://localhost:8081/api/users" \
+curl -X POST "http://localhost:8000/api/users" \
   -H "Content-Type: application/json" \
   -d '{"userId":"C3234567891","userName":"陳小美","email":"chen@example.com","account":"3333777888"}'
 ```
@@ -283,7 +316,7 @@ Request body:
 Example:
 
 ```bash
-curl -X PUT "http://localhost:8081/api/users/C3234567891" \
+curl -X PUT "http://localhost:8000/api/users/C3234567891" \
   -H "Content-Type: application/json" \
   -d '{"userName":"陳小美-更新","email":"chen.updated@example.com","account":"3333777888"}'
 ```
@@ -293,7 +326,7 @@ curl -X PUT "http://localhost:8081/api/users/C3234567891" \
 Example:
 
 ```bash
-curl -X DELETE "http://localhost:8081/api/users/C3234567891"
+curl -X DELETE "http://localhost:8000/api/users/C3234567891"
 ```
 
 ### 2. Product CRUD
@@ -319,7 +352,7 @@ sortDirection  => ASC | DESC
 Example:
 
 ```bash
-curl "http://localhost:8081/api/products?page=1&pageSize=10&keyword=基金&priceMin=10000&priceMax=20000&sortBy=no&sortDirection=ASC"
+curl "http://localhost:8000/api/products?page=1&pageSize=10&keyword=基金&priceMin=10000&priceMax=20000&sortBy=no&sortDirection=ASC"
 ```
 
 #### `GET /api/products/{no}`
@@ -327,7 +360,7 @@ curl "http://localhost:8081/api/products?page=1&pageSize=10&keyword=基金&price
 Example:
 
 ```bash
-curl "http://localhost:8081/api/products/1"
+curl "http://localhost:8000/api/products/1"
 ```
 
 #### `POST /api/products`
@@ -345,7 +378,7 @@ Request body:
 Example:
 
 ```bash
-curl -X POST "http://localhost:8081/api/products" \
+curl -X POST "http://localhost:8000/api/products" \
   -H "Content-Type: application/json" \
   -d '{"productName":"亞洲平衡基金","price":22000,"feeRate":0.011}'
 ```
@@ -365,7 +398,7 @@ Request body:
 Example:
 
 ```bash
-curl -X PUT "http://localhost:8081/api/products/6" \
+curl -X PUT "http://localhost:8000/api/products/6" \
   -H "Content-Type: application/json" \
   -d '{"productName":"亞洲平衡基金-更新","price":22500,"feeRate":0.012}'
 ```
@@ -375,7 +408,7 @@ curl -X PUT "http://localhost:8081/api/products/6" \
 Example:
 
 ```bash
-curl -X DELETE "http://localhost:8081/api/products/6"
+curl -X DELETE "http://localhost:8000/api/products/6"
 ```
 
 ### 3. Favorite Product CRUD
@@ -399,7 +432,7 @@ sortDirection  => ASC | DESC
 Example:
 
 ```bash
-curl "http://localhost:8081/api/favorite-products/like-list?page=1&pageSize=10&keyword=王&sortBy=user_id&sortDirection=ASC"
+curl "http://localhost:8000/api/favorite-products/like-list?page=1&pageSize=10&keyword=王&sortBy=user_id&sortDirection=ASC"
 ```
 
 #### `POST /api/favorite-products`
@@ -418,7 +451,7 @@ Request body:
 Example:
 
 ```bash
-curl -X POST "http://localhost:8081/api/favorite-products" \
+curl -X POST "http://localhost:8000/api/favorite-products" \
   -H "Content-Type: application/json" \
   -d '{"userId":"A1236456789","productNo":1,"purchaseQuantity":2,"account":"1111999666"}'
 ```
@@ -428,7 +461,7 @@ curl -X POST "http://localhost:8081/api/favorite-products" \
 Example:
 
 ```bash
-curl "http://localhost:8081/api/favorite-products/users/A1236456789"
+curl "http://localhost:8000/api/favorite-products/users/A1236456789"
 ```
 
 #### `PUT /api/favorite-products/{sn}`
@@ -446,7 +479,7 @@ Request body:
 Example:
 
 ```bash
-curl -X PUT "http://localhost:8081/api/favorite-products/1" \
+curl -X PUT "http://localhost:8000/api/favorite-products/1" \
   -H "Content-Type: application/json" \
   -d '{"productNo":2,"purchaseQuantity":3,"account":"1111999666"}'
 ```
@@ -456,5 +489,5 @@ curl -X PUT "http://localhost:8081/api/favorite-products/1" \
 Example:
 
 ```bash
-curl -X DELETE "http://localhost:8081/api/favorite-products/1"
+curl -X DELETE "http://localhost:8000/api/favorite-products/1"
 ```

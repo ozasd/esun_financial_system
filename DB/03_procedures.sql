@@ -32,11 +32,12 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1
-        FROM "User" AS u
-        WHERE u.user_id = p_user_id
-    ) THEN
+    PERFORM 1
+    FROM "User" AS u
+    WHERE u.user_id = p_user_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'User % does not exist', p_user_id
             USING ERRCODE = '23503';
     END IF;
@@ -58,7 +59,8 @@ BEGIN
         v_price,
         v_fee_rate
     FROM "Product" AS p
-    WHERE p.no = p_product_no;
+    WHERE p.no = p_product_no
+    FOR UPDATE;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Product % does not exist', p_product_no
@@ -313,19 +315,21 @@ BEGIN
     SELECT ll.user_id
     INTO v_user_id
     FROM "LikeList" AS ll
-    WHERE ll.sn = p_sn;
+    WHERE ll.sn = p_sn
+    FOR UPDATE;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'LikeList sn % does not exist', p_sn
             USING ERRCODE = 'P0002';
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1
-        FROM "User" AS u
-        WHERE u.user_id = v_user_id
-          AND u.account = p_account
-    ) THEN
+    PERFORM 1
+    FROM "User" AS u
+    WHERE u.user_id = v_user_id
+      AND u.account = p_account
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'Account % does not belong to user %', p_account, v_user_id
             USING ERRCODE = '23503';
     END IF;
@@ -337,7 +341,8 @@ BEGIN
         v_price,
         v_fee_rate
     FROM "Product" AS p
-    WHERE p.no = p_product_no;
+    WHERE p.no = p_product_no
+    FOR UPDATE;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Product % does not exist', p_product_no
@@ -370,11 +375,12 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM "LikeList" AS ll
-        WHERE ll.sn = p_sn
-    ) THEN
+    PERFORM 1
+    FROM "LikeList" AS ll
+    WHERE ll.sn = p_sn
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'LikeList sn % does not exist', p_sn
             USING ERRCODE = 'P0002';
     END IF;

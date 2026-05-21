@@ -1,0 +1,55 @@
+_format_version: "3.0"
+_transform: true
+
+upstreams:
+  - name: esun-backend-upstream
+    algorithm: round-robin
+    slots: 1000
+    healthchecks:
+      active:
+        type: http
+        http_path: /actuator/health
+        healthy:
+          interval: 10
+          successes: 2
+        unhealthy:
+          interval: 10
+          http_failures: 3
+          tcp_failures: 3
+          timeouts: 3
+      passive:
+        type: http
+        healthy:
+          successes: 2
+        unhealthy:
+          http_failures: 3
+          tcp_failures: 3
+          timeouts: 3
+    targets:
+      - target: backend:8080
+        weight: 100
+      - target: backend-replica:8080
+        weight: 100
+
+services:
+  - name: esun-backend
+    protocol: http
+    host: esun-backend-upstream
+    port: 80
+    routes:
+      - name: esun-api
+        paths:
+          - /api
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 120
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+              hide_client_headers: false
+      - name: esun-actuator
+        paths:
+          - /actuator
+        strip_path: false
