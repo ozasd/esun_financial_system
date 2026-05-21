@@ -161,6 +161,18 @@ sequenceDiagram
     setTimeout(fetchLikeList, 2500);
     ```
 
+### 10. 大量資料分頁 (Pagination) 避免資料庫負載過大與 OOM
+當系統資料量日益龐大時，若 API 查詢不加限制地撈出所有紀錄，將導致資料庫記憶體消耗過大 (OOM)、網路傳輸阻塞，甚至拖垮整個後端應用。本專案在底層存儲與 API 介面實作了嚴格的分頁機制，控制單次查詢的最大回傳筆數。
+
+* **程式碼標記與範例寫法**：
+  * **PostgreSQL LIMIT/OFFSET 分頁**：見 `db/03_procedures.sql` 的 `sp_get_like_list` 函數。
+    ```sql
+    -- 限制單次查詢筆數 (預設 10 筆)，並設定游標起點
+    LIMIT COALESCE(NULLIF(p_page_size, 0), 10)
+    OFFSET GREATEST(COALESCE(p_offset, 0), 0);
+    ```
+  * **總數查詢 (Total Count) 輔助**：見同檔案的 `sp_count_like_list` 函數，用於回傳符合條件的總筆數，讓前端能正確渲染分頁元件 (Pagination UI)。
+
 ---
 
 ## 系統效能壓測量化數據 (Stress Test Results)
