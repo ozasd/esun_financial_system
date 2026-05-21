@@ -14,22 +14,39 @@ import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+// @Service
+// 告訴 Spring：這是一個 Service 層物件
+// 類似 Express 的 service module
 @Service
+// Service Impl（真正商業邏輯）
+// interface 是功能規格
+// impl 才是真正執行內容
 public class FavoriteProductServiceImpl implements FavoriteProductService {
 
+    // 允許排序的欄位
+    // 避免前端亂傳 SQL 欄位造成 SQL Injection
     private static final Set<String> ALLOWED_SORT_COLUMNS =
             Set.of("user_id", "user_name", "email", "account");
 
+    // Repository：負責資料庫操作
+    // 類似 Express 的 model/db layer
     private final FavoriteProductRepository favoriteProductRepository;
 
+    // Spring 自動注入 Repository
     public FavoriteProductServiceImpl(FavoriteProductRepository favoriteProductRepository) {
         this.favoriteProductRepository = favoriteProductRepository;
     }
 
+    // 新增商品商業邏輯
+    // 1. 驗證參數
+    // 2. 呼叫 Repository
+    // 3. Repository 再去操作 DB
     @Override
     public long postFavoriteProduct(PostFavoriteProductRequest request) {
+        // 驗證 userId
         validateUserId(request.userId());
         validateAccount(request.account());
+        // 呼叫 Repository 寫入 DB
         return favoriteProductRepository.postFavoriteProduct(
                 request.userId(),
                 request.productNo(),
@@ -37,6 +54,8 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
                 request.account());
     }
 
+    // 查詢清單商業邏輯
+    // 類似：service.getList(req.query)
     @Override
     public PagedResponse<LikeListResponse> getLikeList(GetLikeListRequest request) {
         int page = request.getPage() == null ? 1 : request.getPage();
@@ -47,8 +66,10 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
         validateSortBy(request.getSortBy());
         validateSortDirection(request.getSortDirection());
 
+        // Repository 查詢 DB 資料
         List<LikeListResponse> datas = favoriteProductRepository.getLikeList(request);
         long total = favoriteProductRepository.countLikeList(request);
+        // 組合分頁資料後回傳給 Controller
         return new PagedResponse<>(datas, total, page, pageSize);
     }
 
@@ -58,6 +79,7 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
         return favoriteProductRepository.getFavoriteProductsByUser(userId);
     }
 
+    // 更新商品商業邏輯
     @Override
     public long putFavoriteProduct(long sn, PutFavoriteProductRequest request) {
         validateAccount(request.account());
@@ -68,11 +90,14 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
                 request.account());
     }
 
+    // 刪除商品商業邏輯
     @Override
     public boolean deleteFavoriteProduct(long sn) {
         return favoriteProductRepository.deleteFavoriteProduct(sn);
     }
 
+    // 驗證邏輯
+    // Service 很常集中處理商業驗證
     private void validateUserId(String userId) {
         if (!StringUtils.hasText(userId)) {
             throw new BadRequestException("userId must not be blank");
