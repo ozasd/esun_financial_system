@@ -1,205 +1,627 @@
-# Esun Financial System  
+# Esun Financial System
 
-## 金融商品喜好紀錄系統｜玉山實作題 × 系統設計教學範例
+## 金融商品喜好紀錄系統｜銀行高流量場景 × 系統設計教學範例
 
-本專案為一套金融商品喜好紀錄系統，除了提供基礎的 CRUD 功能外，更作為一個**系統設計 (System Design, SD) 的學習教材**。
-專案採用前後端分離架構，並實作了多項應對高併發、資料一致性與高可用性的架構設計，包含 API Gateway 限流、Redis 快取與防雪崩機制、冪等性設計 (Idempotency) 以及 PostgreSQL 的行鎖與聚合查詢優化。
+## 專案情境
 
----
+在銀行與金融服務場景中，系統通常需要同時面對大量使用者查詢、短時間內重複提交、資料一致性要求、API 流量控管，以及後續維護與擴充需求。
 
-## 系統特色與架構亮點 (System Features)
+例如，當使用者查詢自己的金融商品喜好清單時，系統可能會在短時間內收到大量讀取請求；當使用者新增或修改喜好金融商品時，系統也必須避免重複提交、資料錯亂或交易不一致。除此之外，金融系統也需要考量 SQL Injection、XSS、Rate Limiting、Transaction、資料庫效能與 CI 自動化檢查等工程議題。
 
-本系統不僅僅是 Spring Boot + Vue 的簡單應用，更融合了以下業界常見的微服務與高併發架構設計：
+因此，本專案不只完成一套金融商品喜好紀錄系統，也將它延伸為一個後端工程與系統設計學習範例，目標是打造一套具備以下特性的系統：
 
-1. **L7 負載均衡與 API 閘道器 (Kong API Gateway)**：所有外部請求先經過 Kong 進行限流 (Rate Limiting) 與 Round-robin 負載均衡，再轉發至後端多個實例。
-2. **高併發讀取快取 (Redis Caching)**：使用 Redis 快取頻繁讀取的資料，大幅降低資料庫壓力。
-3. **防止快取雪崩 (Cache Avalanche Prevention)**：採用「基礎時間 + 隨機時間」的 TTL 設計，避免大量快取在同一時間失效。
-4. **資料庫層級的強一致性 (PostgreSQL 行鎖)**：透過 `SELECT ... FOR UPDATE` 避免 Race Condition，確保交易正確性。
-5. **防止重複提交 (Idempotency 冪等性)**：利用 Redis 的 `SETNX` 機制，阻擋短時間內的重複操作。
-6. **聚合查詢優化 (JSON_AGG)**：解決 ORM 常見的 N+1 Query 效能瓶頸。
-7. **資料庫索引優化 (Database Indexing)**：針對常用查詢欄位與關聯欄位建立索引，大幅提升檢索速度。
-8. **非同步處理與削峰填谷 (Async Processing)**：使用 Redis Queue 搭配背景 Worker 消化寫入請求，大幅提升系統瞬間吞吐量。
-9. **前端樂觀更新 (Optimistic UI)**：針對非同步 API 的最終一致性 (Eventual Consistency) 問題，在前端利用假資料與輪詢確保使用者體驗無縫接軌。
+- **安全性**：避免 SQL Injection、XSS、惡意高頻請求與重複提交。
+- **可靠性**：透過 Transaction、Row Lock、Idempotency 確保資料一致性。
+- **高效能**：透過 Redis Cache、資料庫索引、JSON_AGG 聚合查詢降低查詢成本。
+- **高可用性**：透過 API Gateway、Rate Limiting、多後端實例與非同步處理提升系統承載能力。
+- **可維護性**：採用清楚的分層架構、Docker Compose、GitHub Actions CI 與模組化設計。
+- **可擴充性**：保留後續導入 Kubernetes、Observability、Message Queue、分散式追蹤的擴充空間。
 
 ---
 
-## 系統設計 (SD) 優化解析教材
+## 專案簡介
 
-以下詳細說明本專案如何解決常見的系統設計問題，並標示了對應的程式碼位置供學習參考：
+本專案為一套金融商品喜好紀錄系統，使用者可以透過前端介面新增、查詢、修改與刪除自己偏好的金融商品，並由系統計算預計扣款總金額與總手續費用。
 
-### 1. 應對高併發讀取：Redis 快取緩衝層
-在高併發場景中，直接讀取資料庫會造成極大壓力。我們將使用者的最愛清單讀取加入 Redis 快取，作為資料庫前的緩衝層。當資料被更新或刪除時，我們會主動執行**快取失效 (Cache Eviction)**，以避免讀到舊資料。
+本系統以玉山銀行後端工程師 Java 實作題為基礎，依照題目要求完成 Vue.js 前端、Spring Boot 後端、RESTful API、Maven 專案、Stored Procedure、Transaction、SQL Injection 防護、XSS 防護，以及三層式架構設計。題目要求系統需使用 Web Server、Application Server 與任一關聯式資料庫組成三層式架構，後端需依需求設計展示層、業務層、資料層與共用層。 [oai_citation:0‡【新進Java】玉山銀行後端工程師實作題E.pdf](sediment://file_00000000c5b47207b6a6c6c7138afce3)
 
-**快取讀取流程圖：**
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API Gateway
-    participant Spring Boot
-    participant Redis
-    participant PostgreSQL
+在完成基本功能後，本專案進一步加入多項常見的系統設計優化：
 
-    Client->>API Gateway: GET /api/favorite-products/users/{id}
-    API Gateway->>Spring Boot: 轉發請求
-    Spring Boot->>Redis: 查詢 Cache (cache:user_favorites:{id})
-    alt Cache Hit (命中)
-        Redis-->>Spring Boot: 回傳 JSON 資料
-    else Cache Miss (未命中)
-        Redis-->>Spring Boot: 回傳 Null
-        Spring Boot->>PostgreSQL: 查詢 DB
-        PostgreSQL-->>Spring Boot: 回傳實體資料
-        Spring Boot->>Redis: 將資料寫入 Cache (並加上 TTL)
-    end
-    Spring Boot-->>API Gateway: 回傳結果
-    API Gateway-->>Client: 回傳 JSON 回應
+- Kong API Gateway：統一 API 入口、限流與負載均衡
+- Redis Cache：降低高併發讀取對資料庫造成的壓力
+- Cache Avalanche Prevention：使用 TTL Jitter 避免快取同時失效
+- Idempotency：使用 Redis SETNX 避免短時間重複提交
+- PostgreSQL Row Lock：使用 `SELECT ... FOR UPDATE` 避免 Race Condition
+- JSON_AGG：減少 N+1 Query 與後端資料組裝成本
+- Database Indexing：針對查詢、JOIN、排序欄位建立索引
+- Async Queue：使用 Redis Queue + Worker 削峰填谷
+- Optimistic UI：改善非同步寫入下的使用者體驗
+- Pagination：避免大量資料一次查詢造成 DB 與後端負載過高
+- GitHub Actions CI：自動執行後端測試、前端建置與 Docker Compose 檢查
+
+---
+
+## 系統設計目標
+
+本專案的設計目標不是單純完成 CRUD，而是模擬銀行系統在真實服務中可能遇到的工程問題，並以可學習、可觀察、可測試的方式實作對應解法。
+
+| 系統問題 | 對應設計 |
+|---|---|
+| 大量使用者同時查詢喜好商品 | Redis Cache |
+| 大量快取同時過期導致 DB 瞬間壓力過高 | TTL Jitter 防止 Cache Avalanche |
+| 使用者連續點擊造成重複新增 | Redis SETNX Idempotency |
+| 多請求同時異動同一筆資料 | PostgreSQL Transaction + Row Lock |
+| ORM 查詢造成 N+1 Query | PostgreSQL JSON_AGG 聚合查詢 |
+| 單一 IP 或惡意請求過度消耗資源 | Kong Rate Limiting |
+| 寫入流量瞬間暴增 | Redis Queue + Background Worker |
+| 非同步寫入導致前端短暫查不到資料 | Optimistic UI + Polling |
+| 查詢資料量過大造成 DB / API 負載過高 | Pagination |
+| 程式碼修改後破壞既有功能 | GitHub Actions CI |
+
+---
+
+## 系統特色與架構亮點
+
+### 1. 銀行場景導向的三層式架構
+
+本系統符合 Web Server、Application Server、Database 的三層式架構設計：
+
+```txt
+Browser
+   |
+   v
+Nginx Web Server
+   |
+   v
+Kong API Gateway
+   |
+   v
+Spring Boot Application Server
+   |
+   v
+PostgreSQL / Redis
 ```
 
-### 2. 防止快取雪崩 (Cache Avalanche)
-為了解決大量快取同時過期，導致請求瞬間湧入穿透到資料庫的問題，我們在設定快取時加入了隨機過期時間 (Jitter)，將快取失效的時間點打散。
-
-* **程式碼標記**：
-  * **寫入快取與隨機 TTL**：見 `backend/src/main/java/com/esun/financialsystem/business/service/impl/FavoriteProductServiceImpl.java` 內的 `getFavoriteProductsByUser` 方法。
-    ```java
-    // 基礎過期時間 5 分鐘 (300秒) + 隨機 0~300 秒，防止快取雪崩
-    long ttlSeconds = 300 + ThreadLocalRandom.current().nextInt(301);
-    redisTemplate.opsForValue().set(cacheKey, jsonData, ttlSeconds, TimeUnit.SECONDS);
-    ```
-  * **快取清除 (Eviction)**：見同檔案內的 `putFavoriteProduct` 與 `deleteFavoriteProduct` 方法呼叫的 `evictUserCache(userId)`。
-
-### 3. 避免重複提交：Redis 冪等性 (Idempotency)
-當使用者因為網路延遲連續點擊新增按鈕時，系統可能會寫入重複資料。我們利用 Redis 的 `setIfAbsent` (即 SETNX) 鎖住特定請求參數 10 秒鐘。如果同一個請求在 10 秒內重複出現，系統會直接拒絕。
-
-* **程式碼標記**：
-  * **Redis 冪等性檢查**：見 `FavoriteProductServiceImpl.java` 的 `postFavoriteProduct` 方法。
-    ```java
-    Boolean success = redisTemplate.opsForValue().setIfAbsent(idempotencyKey, "1", Duration.ofSeconds(10));
-    if (Boolean.FALSE.equals(success)) {
-        throw new BadRequestException("Duplicate request, please try again later");
-    }
-    ```
-
-### 4. 防止 Race Condition：DB 行鎖 (Pessimistic Lock)
-在多個請求同時嘗試修改同一筆紀錄時，除了依賴前端或 Redis 的防護，我們在資料庫底層也加上了悲觀鎖 (Pessimistic Lock)。在 PostgreSQL 存儲過程中，利用 `FOR UPDATE` 鎖住關聯的 `User` 與 `Product` 資料列，確保在高併發下交易的強一致性。
-
-* **程式碼標記**：
-  * **PostgreSQL FOR UPDATE 行鎖**：見 `db/03_procedures.sql` 的 `sp_add_favorite_product` 函數。
-    ```sql
-    PERFORM 1 FROM "User" AS u WHERE u.user_id = p_user_id FOR UPDATE;
-    ```
-
-### 5. 資料庫查詢優化：解決 N+1 Query
-查詢關聯資料時（例如查詢 User 與其下的所有 Favorite Products），若使用傳統做法會產生 1+N 次查詢。我們改為在 PostgreSQL 內直接使用 `JSON_AGG` 將多筆商品聚合成 JSON 字串回傳，大幅減少 DB 連線次數與傳輸成本。
-
-* **程式碼標記與範例寫法**：
-  * **JSON_AGG 聚合查詢**：見 `db/03_procedures.sql` 的 `sp_get_like_list` 函數。
-    ```sql
-    SELECT
-        u.user_id,
-        CAST(
-            COALESCE(
-                JSON_AGG(
-                    JSON_BUILD_OBJECT(
-                        'sn', ll.sn,
-                        'productName', p.product_name,
-                        'price', p.price
-                    ) ORDER BY ll.sn
-                ), '[]'::json
-            ) AS TEXT
-        ) AS favorite_products
-    FROM "User" AS u
-    INNER JOIN "LikeList" AS ll ON ll.user_id = u.user_id
-    INNER JOIN "Product" AS p ON p.no = ll.product_no
-    GROUP BY u.user_id;
-    ```
-
-### 6. 系統限流保護：API Gateway (Kong) Rate Limiting
-為了防止惡意攻擊或單一使用者過度消耗系統資源，我們在 Kong API Gateway 層級加上了 Rate Limiting 插件，設定每個 IP 每分鐘最多只能請求 120 次。
-
-* **程式碼標記與範例寫法**：
-  * **限流設定**：見 `gateway/kong.yml` 中的 `plugins` 設定。
-    ```yaml
-    plugins:
-      - name: rate-limiting
-        config:
-          minute: 120
-          policy: local
-    ```
-
-### 7. 資料庫索引優化 (Database Indexing)
-對於經常被用作 JOIN 條件、WHERE 篩選條件，或是 ORDER BY 的欄位，建立適當的索引是提升關聯式資料庫查詢效能的關鍵。我們針對外鍵 (如 `user_id`, `product_no`) 與常用搜尋欄位 (如 `email`, `product_name`) 建立了資料庫索引。
-
-* **程式碼標記與範例寫法**：
-  * **建立索引指令**：見 `db/04_indexes.sql` 檔案。
-    ```sql
-    -- 針對 JOIN 與查詢條件建立複合索引
-    CREATE INDEX IF NOT EXISTS idx_like_list_user_id_sn
-        ON "LikeList" (user_id, sn);
-
-    -- 針對常用排序與搜尋欄位建立索引
-    CREATE INDEX IF NOT EXISTS idx_product_price
-        ON "Product" (price);
-    ```
-
-### 8. 非同步處理與削峰填谷 (Async Processing)
-對於不需立即獲得資料庫主鍵的回應（如新增紀錄），我們將 `POST` 請求轉化為 JSON 推入 Redis List，隨即回傳受理狀態給前端。並由獨立的背景 Worker 每秒定時消化佇列，避免瞬間大量連線壓垮 PostgreSQL。
-
-* **程式碼標記**：
-  * **API 推入佇列**：見 `backend/src/main/java/com/esun/financialsystem/business/service/impl/FavoriteProductServiceImpl.java` 內的 `postFavoriteProduct` 方法。
-  * **背景 Worker**：見 `backend/src/main/java/com/esun/financialsystem/business/worker/FavoriteProductWorker.java`，透過 `@Scheduled` 排程搭配 `rightPop` 消化任務。
-
-### 9. 前端樂觀更新 (Optimistic UI) 應對最終一致性
-當後端改為非同步處理時，資料寫入會產生「最終一致性 (Eventual Consistency)」的延遲。如果前端在送出表單後立刻重新拉取 API，可能會看不到最新資料。為了彌補這段時間差，我們在前端實作了樂觀更新。
-
-* **程式碼標記與範例寫法**：
-  * **Vue 樂觀更新與輪詢**：見 `frontend/src/components/FavoritePanel.vue` 的 `submitForm` 函數。
-    ```javascript
-    // 樂觀更新：立刻在畫面上顯示假資料（狀態顯示為處理中）
-    userItem.favoriteProducts.push({ sn: Date.now(), productName: '處理中...' /* ... */ });
-    
-    // 輪詢：延遲刷新確保拿到 Worker 寫入後的最新 DB 資料
-    setTimeout(fetchLikeList, 1200);
-    setTimeout(fetchLikeList, 2500);
-    ```
-
-### 10. 大量資料分頁 (Pagination) 避免資料庫負載過大與 OOM
-當系統資料量日益龐大時，若 API 查詢不加限制地撈出所有紀錄，將導致資料庫記憶體消耗過大 (OOM)、網路傳輸阻塞，甚至拖垮整個後端應用。本專案在底層存儲與 API 介面實作了嚴格的分頁機制，控制單次查詢的最大回傳筆數。
-
-* **程式碼標記與範例寫法**：
-  * **PostgreSQL LIMIT/OFFSET 分頁**：見 `db/03_procedures.sql` 的 `sp_get_like_list` 函數。
-    ```sql
-    -- 限制單次查詢筆數 (預設 10 筆)，並設定游標起點
-    LIMIT COALESCE(NULLIF(p_page_size, 0), 10)
-    OFFSET GREATEST(COALESCE(p_offset, 0), 0);
-    ```
-  * **總數查詢 (Total Count) 輔助**：見同檔案的 `sp_count_like_list` 函數，用於回傳符合條件的總筆數，讓前端能正確渲染分頁元件 (Pagination UI)。
+前端由 Vue 3 建立使用者操作介面，Nginx 負責靜態資源與反向代理，Kong 作為 API Gateway，Spring Boot 負責商業邏輯與資料處理，PostgreSQL 作為主要關聯式資料庫，Redis 則負責快取、冪等性與非同步佇列。
 
 ---
 
-## 系統效能壓測量化數據 (Stress Test Results)
+### 2. 清楚的後端分層設計
 
-為了具體量化上述系統設計 (SD) 優化所帶來的效能提升，我們使用 Python `aiohttp` 撰寫了壓測腳本 (`backend/stress_test.py`)，在本地環境針對核心 API 進行了高併發壓力測試。
-*(壓測條件：1000 次總請求，100 個併發數 (Concurrency)，直接對口 `localhost:8081` 避開 Kong 限流)*
+後端依照題目要求拆分為展示層、業務層、資料層與共用層：
 
-### 1. 讀取效能：Cache vs No-Cache
+| 層級 | 對應 Package | 職責 |
+|---|---|---|
+| 展示層 Presentation | `presentation` | Controller、Request、Response、API 入口 |
+| 業務層 Business | `business` | Service、商業邏輯、快取、冪等性、Queue |
+| 資料層 Data | `data` | Repository、Stored Procedure 呼叫、資料存取 |
+| 共用層 Common | `common` | Exception、錯誤處理、共用工具 |
 
-這項測試對比了「直接讓 PostgreSQL 處理複雜的 `JSON_AGG` 聚合查詢」與「直接從 Redis 讀取快取」的效能差異。
+這樣的分層可以降低 Controller 與資料庫邏輯耦合，讓系統更容易維護、測試與擴充。
 
-| 測試情境 | 吞吐量 (RPS) | 平均回應時間 (Latency) | P95 回應時間 |
-|---------|-------------|-----------------------|-------------|
-| **無快取 (PostgreSQL DB)** | ~675 req/s | 143.88 ms | 444.52 ms |
-| **有快取 (Redis Cache)** | **~2586 req/s** | **36.61 ms** | **77.59 ms** |
+---
 
-> **結論**：Redis 快取層讓系統的**吞吐量飆升近 3.8 倍 (+283%)**，且平均回應時間**大幅降低約 74%**（從 143ms 縮短至 36ms）。在高併發場景下有效保護了 PostgreSQL 不被瞬間流量壓垮。
+### 3. 高併發讀取保護
 
-### 2. 寫入效能：削峰填谷 (Async Queue)
+金融系統常見的查詢操作，例如使用者查看商品清單、帳戶資訊或交易紀錄，通常會遠多於寫入操作。
 
-這項測試針對 `POST /api/favorite-products` 進行狂轟濫炸。為了繞過 10 秒冪等性防護，壓測腳本會隨機生成 1000 筆不同的訂單資料。
+因此本系統對使用者喜好商品查詢加入 Redis Cache：
 
-| 測試情境 | 吞吐量 (RPS) | 平均回應時間 (Latency) | P95 回應時間 |
-|---------|-------------|-----------------------|-------------|
-| **非同步推入佇列 (Redis Queue)** | **~1209 req/s** | **78.88 ms** | **176.29 ms** |
+```txt
+Client Request
+   |
+   v
+Check Redis Cache
+   |
+   |-- Cache Hit  -> Return directly
+   |
+   |-- Cache Miss -> Query PostgreSQL -> Write back Redis -> Return
+```
 
-> **結論**：即便同時有 100 個人瘋狂點擊新增，因為 API 只負責「推入 Redis Queue 並提早回傳」，系統依然能保持高達 **1200 req/s** 的寫入吞吐量，平均回應低於 80ms。而這 1000 筆訂單會由 `backend-worker` 在背景以穩定的速率寫入資料庫，達成完美的**削峰填谷**。
+此設計可以大幅降低 PostgreSQL 在高併發讀取時的壓力。
+
+---
+
+### 4. 資料一致性與交易安全
+
+金融系統不能只追求快，也必須確保資料正確。
+
+本專案在新增、修改、刪除喜好商品時，使用 Stored Procedure 與 Transaction 處理多表異動，並在必要情境使用 PostgreSQL `FOR UPDATE` 鎖住資料列，避免多個請求同時修改同一筆資料造成 Race Condition。
+
+---
+
+### 5. 防止重複提交
+
+使用者可能因為網路延遲、連續點擊或重送請求，導致同一筆新增操作被送出多次。
+
+本系統使用 Redis `SETNX` 建立短時間的 Idempotency Key：
+
+```txt
+Same request within 10 seconds
+   |
+   v
+Redis SETNX failed
+   |
+   v
+Reject duplicate request
+```
+
+這可以避免短時間內重複新增同一筆喜好商品。
+
+---
+
+### 6. API Gateway 流量控管
+
+所有外部 API 請求都會先經過 Kong API Gateway。
+
+Kong 負責：
+
+- 統一 API 入口
+- Rate Limiting
+- L7 Routing
+- Round-robin Load Balancing
+- 保護後端服務
+
+此設計可避免所有請求直接打到 Spring Boot 後端，並在進入應用層之前先做第一層流量保護。
+
+---
+
+### 7. 非同步寫入與削峰填谷
+
+在高併發寫入場景中，如果每個 API 請求都直接寫入 DB，資料庫可能會在短時間內承受大量 transaction。
+
+因此本系統將新增喜好商品流程設計為：
+
+```txt
+API 接收請求
+   |
+   v
+Redis Queue
+   |
+   v
+立即回傳 Accepted
+   |
+   v
+Worker 背景寫入 PostgreSQL
+```
+
+這種設計讓 API 層快速回應，真正的 DB 寫入由 Worker 以穩定速度處理，降低資料庫瞬間壓力。
+
+---
+
+## 整體系統架構圖
+
+```mermaid
+flowchart LR
+    Client[Browser / 使用者] --> Nginx[Nginx Web Server<br/>Vue SPA + Reverse Proxy]
+
+    Nginx --> Kong[Kong API Gateway<br/>Rate Limiting<br/>Round-robin Load Balancing]
+
+    Kong --> Backend1[Spring Boot Backend 1]
+    Kong --> Backend2[Spring Boot Backend 2]
+
+    Backend1 --> Redis[(Redis<br/>Cache<br/>Idempotency<br/>Queue)]
+    Backend2 --> Redis
+
+    Backend1 --> DB[(PostgreSQL<br/>Stored Procedure<br/>Transaction<br/>Row Lock)]
+    Backend2 --> DB
+
+    Redis --> Worker[Spring Boot Worker<br/>Queue Consumer]
+    Worker --> DB
+```
+
+---
+
+## 核心請求流程
+
+### 查詢喜好商品：Cache Aside Pattern
+
+```mermaid
+sequenceDiagram
+    participant Client as Browser
+    participant Nginx
+    participant Kong as API Gateway
+    participant Backend as Spring Boot
+    participant Redis
+    participant DB as PostgreSQL
+
+    Client->>Nginx: GET /api/favorite-products/users/{userId}
+    Nginx->>Kong: Proxy API Request
+    Kong->>Backend: Forward Request
+    Backend->>Redis: GET cache:user_favorites:{userId}
+
+    alt Cache Hit
+        Redis-->>Backend: Cached JSON
+        Backend-->>Kong: 200 OK
+        Kong-->>Nginx: Response
+        Nginx-->>Client: JSON
+    else Cache Miss
+        Redis-->>Backend: Null
+        Backend->>DB: CALL Stored Procedure
+        DB-->>Backend: Query Result
+        Backend->>Redis: SET Cache with TTL + Jitter
+        Backend-->>Kong: 200 OK
+        Kong-->>Nginx: Response
+        Nginx-->>Client: JSON
+    end
+```
+
+---
+
+### 新增喜好商品：Idempotency + Async Queue
+
+```mermaid
+sequenceDiagram
+    participant Client as Browser
+    participant Backend as Spring Boot API
+    participant Redis
+    participant Worker as Background Worker
+    participant DB as PostgreSQL
+
+    Client->>Backend: POST /api/favorite-products
+    Backend->>Redis: SETNX idempotency:{hash} TTL 10s
+
+    alt Duplicate Request
+        Redis-->>Backend: false
+        Backend-->>Client: 400 Duplicate Request
+    else First Request
+        Redis-->>Backend: true
+        Backend->>Redis: LPUSH favorite_product_queue
+        Backend-->>Client: 202 Accepted
+
+        Redis-->>Worker: RPOP Queue Task
+        Worker->>DB: CALL sp_add_favorite_product(...)
+        DB-->>Worker: Commit Transaction
+        Worker->>Redis: DEL cache:user_favorites:{userId}
+    end
+```
+
+---
+
+### 修改 / 刪除喜好商品：Transaction + Cache Eviction
+
+```mermaid
+flowchart TD
+    A[PUT / DELETE Favorite Product] --> B[Validate Request]
+    B --> C[Call Stored Procedure]
+    C --> D[PostgreSQL Transaction]
+    D --> E{DB Update Success?}
+    E -->|No| F[Rollback / Return Error]
+    E -->|Yes| G[Evict Redis Cache]
+    G --> H[Return Success Response]
+```
+
+---
+
+## 系統設計優化解析教材
+
+以下章節說明本專案如何解決常見的後端與系統設計問題，並標示對應的程式碼位置。
+
+---
+
+### 1. 高併發讀取：Redis Cache
+
+在高併發場景下，若所有查詢都直接進 PostgreSQL，資料庫會承受大量讀取壓力。
+
+本系統使用 Redis 作為資料庫前方的快取緩衝層。當使用者查詢喜好商品時，後端會先查 Redis；若 Redis 有資料，直接回傳；若沒有資料，才查 PostgreSQL 並將結果寫回 Redis。
+
+對應位置：
+
+```txt
+backend/src/main/java/com/esun/financialsystem/business/service/impl/FavoriteProductServiceImpl.java
+```
+
+---
+
+### 2. Cache Avalanche Prevention：TTL Jitter
+
+如果所有 cache 都設定固定 5 分鐘過期，可能會在同一時間大量失效，導致所有請求瞬間打到資料庫。
+
+因此本系統採用：
+
+```txt
+基礎 TTL + 隨機 TTL
+```
+
+範例：
+
+```java
+long ttlSeconds = 300 + ThreadLocalRandom.current().nextInt(301);
+redisTemplate.opsForValue().set(cacheKey, jsonData, ttlSeconds, TimeUnit.SECONDS);
+```
+
+也就是讓 cache 在 300 到 600 秒之間隨機過期，避免同時間集中失效。
+
+```mermaid
+flowchart LR
+    A[固定 TTL] --> B[大量 Cache 同時過期]
+    B --> C[瞬間請求打到 DB]
+    C --> D[DB 壓力暴增]
+
+    E[TTL + Jitter] --> F[Cache 分散過期]
+    F --> G[DB 壓力平滑]
+```
+
+---
+
+### 3. Idempotency：避免重複提交
+
+使用者可能連續點擊新增按鈕，或因網路延遲重送相同 request。
+
+本系統使用 Redis `SETNX` 實作簡化版冪等性：
+
+```java
+Boolean success = redisTemplate.opsForValue()
+    .setIfAbsent(idempotencyKey, "1", Duration.ofSeconds(10));
+
+if (Boolean.FALSE.equals(success)) {
+    throw new BadRequestException("Duplicate request, please try again later");
+}
+```
+
+此設計可以避免短時間內相同請求被重複處理。
+
+進一步的 production 強化方向：
+
+- 前端傳入 `Idempotency-Key`
+- 後端儲存 request hash
+- 儲存 response snapshot
+- 設計 PROCESSING / SUCCESS / FAILED 狀態
+- 支援第一次成功但 response timeout 時的結果重放
+
+---
+
+### 4. PostgreSQL Row Lock：避免 Race Condition
+
+在多個請求同時修改同一筆資料時，可能會發生 Race Condition。
+
+本系統在 Stored Procedure 中使用 `FOR UPDATE` 鎖住資料列：
+
+```sql
+PERFORM 1
+FROM "User" AS u
+WHERE u.user_id = p_user_id
+FOR UPDATE;
+```
+
+流程如下：
+
+```mermaid
+sequenceDiagram
+    participant R1 as Request 1
+    participant R2 as Request 2
+    participant DB as PostgreSQL
+
+    R1->>DB: SELECT user FOR UPDATE
+    DB-->>R1: Lock acquired
+
+    R2->>DB: SELECT same user FOR UPDATE
+    DB-->>R2: Wait
+
+    R1->>DB: Update data
+    R1->>DB: Commit
+    DB-->>R2: Lock released
+
+    R2->>DB: Continue update
+```
+
+---
+
+### 5. JSON_AGG：解決 N+1 Query
+
+若使用傳統 ORM 查詢關聯資料，可能會出現：
+
+```txt
+查 User 一次
+查 LikeList N 次
+查 Product N 次
+```
+
+這會造成大量 DB round trip。
+
+本系統改由 PostgreSQL 使用 `JSON_AGG` 與 `JSON_BUILD_OBJECT` 一次聚合使用者與喜好商品資料。
+
+優點：
+
+- 減少 DB 查詢次數
+- 減少後端迴圈組資料
+- 回傳格式更接近前端需要的 JSON
+- 降低高併發查詢下的 DB 負擔
+
+---
+
+### 6. Kong API Gateway：Rate Limiting 與 Load Balancing
+
+本系統使用 Kong Gateway 作為 API Gateway。
+
+```mermaid
+flowchart LR
+    Client[Client] --> Kong[Kong API Gateway]
+    Kong --> Backend1[Backend Instance 1]
+    Kong --> Backend2[Backend Instance 2]
+```
+
+Rate Limiting 設定範例：
+
+```yaml
+plugins:
+  - name: rate-limiting
+    config:
+      minute: 120
+      policy: local
+```
+
+此設計可以在請求進入後端服務之前，先做流量控管，避免單一來源過度消耗系統資源。
+
+---
+
+### 7. Database Indexing：提升查詢效率
+
+本系統針對常見的 WHERE、JOIN、ORDER BY 欄位建立索引。
+
+範例：
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_like_list_user_id_sn
+    ON "LikeList" (user_id, sn);
+
+CREATE INDEX IF NOT EXISTS idx_like_list_product_no
+    ON "LikeList" (product_no);
+
+CREATE INDEX IF NOT EXISTS idx_product_price
+    ON "Product" (price);
+```
+
+索引用途：
+
+| 索引 | 用途 |
+|---|---|
+| `idx_like_list_user_id_sn` | 加速查詢單一使用者喜好商品並依 sn 排序 |
+| `idx_like_list_product_no` | 加速 LikeList 與 Product JOIN |
+| `idx_product_price` | 加速價格排序與篩選 |
+| `idx_user_email` | 加速 email 查詢 |
+| `idx_product_name` | 加速商品名稱查詢 |
+
+---
+
+### 8. Async Queue：削峰填谷
+
+大量寫入請求如果直接進 DB，可能造成資料庫連線與 transaction 壓力暴增。
+
+本系統使用 Redis Queue 暫存寫入任務，並由 Worker 背景消化：
+
+```mermaid
+flowchart TD
+    A[大量 POST Request] --> B[Spring Boot API]
+    B --> C[Redis Queue]
+    B --> D[立即回傳 202 Accepted]
+    C --> E[Worker 定時消化任務]
+    E --> F[Stored Procedure]
+    F --> G[PostgreSQL]
+```
+
+目前使用 Redis List 作為簡化版 Queue。若要接近 production，可升級為：
+
+- Redis Stream
+- RabbitMQ
+- Kafka
+- Retry mechanism
+- Dead Letter Queue
+- Message acknowledgement
+- Consumer group
+
+---
+
+### 9. Optimistic UI：改善最終一致性體驗
+
+因為新增請求改為非同步處理，API 回傳成功時，資料可能尚未真正寫入 DB。
+
+因此前端使用 Optimistic UI：
+
+1. 使用者送出新增請求。
+2. 前端先顯示一筆「處理中」資料。
+3. Worker 背景寫入 DB。
+4. 前端延遲輪詢最新資料。
+5. 正式資料回來後取代暫時資料。
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Vue
+    participant API
+    participant Queue
+    participant Worker
+    participant DB
+
+    User->>Vue: Submit favorite product
+    Vue->>API: POST /favorite-products
+    API->>Queue: Push task
+    API-->>Vue: 202 Accepted
+    Vue-->>User: Show pending item
+
+    Worker->>Queue: Consume task
+    Worker->>DB: Insert data
+
+    Vue->>API: Poll latest like-list
+    API->>DB: Query latest data
+    API-->>Vue: Return real data
+    Vue-->>User: Replace pending item
+```
+
+---
+
+### 10. Pagination：避免大量資料查詢造成負載過高
+
+當資料量成長後，如果 API 一次回傳所有資料，可能造成：
+
+- DB 查詢時間過長
+- 後端記憶體壓力增加
+- API response 過大
+- 前端渲染變慢
+
+因此本系統在查詢清單時加入 Pagination。
+
+範例：
+
+```sql
+LIMIT COALESCE(NULLIF(p_page_size, 0), 10)
+OFFSET GREATEST(COALESCE(p_offset, 0), 0);
+```
+
+並搭配總數查詢：
+
+```txt
+sp_count_like_list
+```
+
+讓前端可以正確顯示總頁數與分頁控制。
+
+---
+
+## 效能壓測結果
+
+本專案使用 Python `aiohttp` 撰寫壓測腳本：
+
+```txt
+backend/stress_test.py
+```
+
+壓測條件：
+
+| 項目 | 設定 |
+|---|---|
+| 總請求數 | 1000 |
+| 併發數 | 100 |
+| 測試環境 | Local Docker Compose |
+| 測試 API | localhost:8081 |
+| 說明 | 避開 Kong Rate Limiting，單純測試 backend 效能 |
+
+---
+
+### 1. 讀取效能：PostgreSQL vs Redis Cache
+
+| 測試情境 | 吞吐量 RPS | 平均回應時間 | P95 回應時間 |
+|---|---:|---:|---:|
+| 無快取，直接查 PostgreSQL | 約 675 req/s | 143.88 ms | 444.52 ms |
+| 使用 Redis Cache | 約 2586 req/s | 36.61 ms | 77.59 ms |
+
+結論：
+
+Redis Cache 讓讀取吞吐量提升約 3.8 倍，平均延遲降低約 74%。  
+在高併發查詢場景下，Cache 可以有效降低 PostgreSQL 壓力。
+
+---
+
+### 2. 寫入效能：Async Queue
+
+| 測試情境 | 吞吐量 RPS | 平均回應時間 | P95 回應時間 |
+|---|---:|---:|---:|
+| Redis Queue 非同步寫入 | 約 1209 req/s | 78.88 ms | 176.29 ms |
+
+結論：
+
+API 僅負責驗證請求與推入 Redis Queue，因此可以快速回應。  
+真正的 DB 寫入由 Worker 背景處理，達成削峰填谷效果。
 
 ---
 
@@ -207,132 +629,251 @@ sequenceDiagram
 
 ```txt
 .
-├── backend/               Spring Boot Maven 後端專案 (實作 Redis Cache, Idempotency)
-│   ├── src/main/java/     Java 原始碼（presentation / business / data / common）
-│   ├── src/main/resources/ application.yml
-│   └── Dockerfile
-├── db/                    PostgreSQL 建表、初始化資料、存儲程式與索引 (實作行鎖與聚合查詢)
+├── backend/
+│   ├── src/main/java/com/esun/financialsystem/
+│   │   ├── presentation/         # Controller、Request、Response
+│   │   ├── business/             # Service、Business Logic、Worker
+│   │   ├── data/                 # Repository、DB Access
+│   │   └── common/               # Exception、共用工具
+│   ├── src/main/resources/
+│   │   └── application.yml
+│   ├── Dockerfile
+│   └── pom.xml
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.vue
+│   │   ├── api.js
+│   │   ├── style.css
+│   │   └── components/
+│   │       ├── FavoritePanel.vue
+│   │       ├── UserPanel.vue
+│   │       └── ProductPanel.vue
+│   ├── nginx.conf
+│   ├── Dockerfile
+│   └── package.json
+│
+├── db/
 │   ├── 01_schema.sql
 │   ├── 02_seed.sql
 │   ├── 03_procedures.sql
 │   └── 04_indexes.sql
-├── frontend/              Vue 3 + Vite 前端專案
-│   ├── src/
-│   │   ├── App.vue          主頁面（Tab 切換）
-│   │   ├── api.js           Axios API 服務層
-│   │   ├── style.css        全域設計系統
-│   │   └── components/
-│   │       ├── FavoritePanel.vue   喜好商品 CRUD
-│   │       ├── UserPanel.vue       使用者管理 CRUD
-│   │       └── ProductPanel.vue    商品管理 CRUD
-│   ├── nginx.conf           Nginx 反向代理設定
-│   └── Dockerfile           Multi-stage build（Node → Nginx）
-├── gateway/               Kong DB-less 宣告式設定 (實作 Rate Limiting)
+│
+├── gateway/
 │   └── kong.yml
-└── docker-compose.yml       多服務容器編排 (包含 Redis, Kong, DB, Backend API, Backend Worker)
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+│
+└── docker-compose.yml
 ```
-
-## 系統架構
-
-```txt
-瀏覽器 → Nginx (:3000) ─┬─ /*      → Vue SPA 靜態檔案
-                        └─ /api/* → Kong (:8000) → Spring Boot backend x2 (:8080) ↔ Redis Cache & Queue (:6379)
-                                                                                  ↘ PostgreSQL (:5432)
-                                                                                    ↑ (非同步寫入)
-                                                                                    Spring Boot Worker 
-```
-
-### 技術棧
-
-| 層級 | 技術 |
-|------|------|
-| 前端 | Vue 3、Vite、Axios |
-| Web Server | Nginx 1.27（反向代理 + 靜態資源） |
-| API Gateway | Kong Gateway（DB-less mode、L7 Round-robin、Rate Limiting） |
-| 後端 | Java 17、Spring Boot 3、Spring Data Redis、Spring Web、Spring JDBC |
-| 資料庫 | PostgreSQL 16 (Stored Procedure)、Redis 7 |
-| 容器化 | Docker Compose |
 
 ---
 
-## 持續整合 (Continuous Integration)
+## 技術棧
 
-本專案配置了 GitHub Actions 作為自動化 CI 流程 (`.github/workflows/ci.yml`)，在推送 (Push) 或建立 Pull Request 至 `main` 與 `dev` 分支時會自動執行檢查，確保程式碼變更不會破壞現有功能。
+| 層級 | 技術 |
+|---|---|
+| 前端 | Vue 3、Vite、Axios |
+| Web Server | Nginx 1.27 |
+| API Gateway | Kong Gateway DB-less mode |
+| 後端 | Java 17、Spring Boot 3、Spring Web、Spring JDBC、Spring Data Redis |
+| 資料庫 | PostgreSQL 16 |
+| Cache / Queue | Redis 7 |
+| 容器化 | Docker、Docker Compose |
+| CI | GitHub Actions |
+| 系統設計 | Cache Aside、Idempotency、Rate Limiting、Async Queue、Optimistic UI |
 
-CI 流程涵蓋以下三個維度的自動化檢測：
+---
 
-1. **後端測試 (Backend Tests)**：建置 Java 17 環境，執行 `mvn test` 確保 Spring Boot 所有單元與整合測試皆能順利通過。
-2. **前端測試 (Frontend Tests)**：建置 Node 22 環境，執行 `npm run test` 進行前端測試，並執行 `npm run build` 確保 Vue 3 專案可成功編譯。
-3. **基礎設施檢查 (Docker Compose Config)**：驗證 `docker-compose.yml` 配置檔的語法與結構是否正確，確保容器編排無誤。
+## CI 持續整合
+
+本專案配置 GitHub Actions 作為自動化 CI 流程：
+
+```txt
+.github/workflows/ci.yml
+```
+
+CI 會在 Push 或 Pull Request 到 `main` 與 `dev` 分支時自動執行。
+
+檢查內容包含：
+
+| 階段 | 說明 |
+|---|---|
+| Backend Tests | 建立 Java 17 環境，執行 `mvn test` |
+| Frontend Tests / Build | 建立 Node 22 環境，執行 `npm run test` 與 `npm run build` |
+| Docker Compose Config | 驗證 `docker-compose.yml` 語法與服務設定 |
+
+```mermaid
+flowchart LR
+    A[Push / Pull Request] --> B[GitHub Actions]
+    B --> C[Backend Maven Test]
+    B --> D[Frontend Test and Build]
+    B --> E[Docker Compose Config Check]
+    C --> F{All Pass?}
+    D --> F
+    E --> F
+    F -->|Yes| G[Ready to Merge]
+    F -->|No| H[Block and Fix]
+```
+
+CI 的目的：
+
+- 避免改 A 壞 B
+- 確保後端測試通過
+- 確保前端可正常 build
+- 確保 Docker Compose 設定正確
+- 提升專案穩定性與可維護性
 
 ---
 
 ## 開發與啟動方式
 
-### 方式一：Docker Compose 全套啟動（推薦）
-
-一鍵啟動 PostgreSQL + Redis + 兩個 Spring Boot backend + Kong + Nginx 前端：
+### 方式一：Docker Compose 全套啟動
 
 ```sh
 docker compose up -d --build
 ```
 
-啟動後存取：
+啟動後服務如下：
 
-| 服務 | 網址 |
-|------|------|
-| 前端（Nginx） | http://localhost:3000 |
+| 服務 | URL / Port |
+|---|---|
+| 前端 Nginx | http://localhost:3000 |
 | Kong API Gateway | http://localhost:8000 |
-| 後端 API（直接） | http://localhost:8081 |
+| Backend API 1 | http://localhost:8081 |
+| Backend API 2 | http://localhost:8082 |
 | PostgreSQL | localhost:5432 |
 | Redis | localhost:6380 |
 
-### 方式二：本機開發模式
-
-適合前端開發時使用，Vite Dev Server 提供 HMR 熱更新：
+查看容器狀態：
 
 ```sh
-# 1. 啟動基礎設施
+docker compose ps
+```
+
+查看 logs：
+
+```sh
+docker compose logs -f
+```
+
+停止服務：
+
+```sh
+docker compose down
+```
+
+---
+
+### 方式二：本機前端開發模式
+
+```sh
 docker compose up -d postgres redis backend kong
 
-# 2. 啟動前端 dev server（Vite proxy 自動轉發 /api → localhost:8000）
 cd frontend
 npm install
 npm run dev
 ```
 
-前端 dev server：http://localhost:5173
+前端 dev server：
+
+```txt
+http://localhost:5173
+```
+
+---
+
+## Redis Dashboard 檢查方式
+
+若要確認 Redis 是否真的有存入 cache、queue 或 idempotency key，可以使用 RedisInsight。
+
+因為本專案 Docker Redis 對外 port 為 `6380`，RedisInsight 連線設定如下：
+
+| 欄位 | 值 |
+|---|---|
+| Host | 127.0.0.1 |
+| Port | 6380 |
+| Name | esun-local-redis |
+
+CLI 檢查方式：
+
+```sh
+redis-cli -p 6380
+```
+
+查看所有 key：
+
+```sh
+keys *
+```
+
+查看 queue 長度：
+
+```sh
+llen favorite_product_queue
+```
 
 ---
 
 ## API 快速導覽
 
-API Gateway 預設 Base URL：`http://localhost:8000`
+API Gateway Base URL：
 
-### Favorite Product（收藏商品）API
-*(本區塊 API 已受 Redis 快取與冪等性防護)*
+```txt
+http://localhost:8000
+```
 
-- `GET /api/favorite-products/like-list`
-- `POST /api/favorite-products` *(具備 10 秒冪等性阻擋與非同步 Message Queue 寫入)*
-- `GET /api/favorite-products/users/{userId}` *(具備 Redis 讀取快取與防雪崩)*
-- `PUT /api/favorite-products/{sn}` *(更新後會主動 Evict 舊快取)*
-- `DELETE /api/favorite-products/{sn}` *(刪除後會主動 Evict 舊快取)*
+### Favorite Product API
+
+| Method | Endpoint | 說明 |
+|---|---|---|
+| GET | `/api/favorite-products/like-list` | 查詢所有使用者喜好清單 |
+| GET | `/api/favorite-products/users/{userId}` | 查詢單一使用者喜好商品，具備 Redis Cache |
+| POST | `/api/favorite-products` | 新增喜好商品，具備 Idempotency 與 Async Queue |
+| PUT | `/api/favorite-products/{sn}` | 修改喜好商品，成功後清除 cache |
+| DELETE | `/api/favorite-products/{sn}` | 刪除喜好商品，成功後清除 cache |
 
 ### User API
 
-- `GET /api/users`
-- `GET /api/users/{userId}`
-- `POST /api/users`
-- `PUT /api/users/{userId}`
-- `DELETE /api/users/{userId}`
+| Method | Endpoint | 說明 |
+|---|---|---|
+| GET | `/api/users` | 查詢使用者清單 |
+| GET | `/api/users/{userId}` | 查詢單一使用者 |
+| POST | `/api/users` | 新增使用者 |
+| PUT | `/api/users/{userId}` | 修改使用者 |
+| DELETE | `/api/users/{userId}` | 刪除使用者 |
 
 ### Product API
 
-- `GET /api/products`
-- `GET /api/products/{no}`
-- `POST /api/products`
-- `PUT /api/products/{no}`
-- `DELETE /api/products/{no}`
+| Method | Endpoint | 說明 |
+|---|---|---|
+| GET | `/api/products` | 查詢商品清單 |
+| GET | `/api/products/{no}` | 查詢單一商品 |
+| POST | `/api/products` | 新增商品 |
+| PUT | `/api/products/{no}` | 修改商品 |
+| DELETE | `/api/products/{no}` | 刪除商品 |
 
 ---
-*此專案除了滿足基礎商業需求外，更適合作為進階系統設計的參考範例。歡迎查閱各模組原始碼，深入了解實作細節！*
+
+## 專案定位
+
+本專案不是單純的 CRUD Demo，而是以銀行金融商品喜好紀錄系統為核心，延伸實作常見後端系統設計議題：
+
+- 高併發讀取如何保護 DB
+- 重複提交如何避免
+- 多請求同時修改資料如何保持一致性
+- ORM 常見 N+1 問題如何優化
+- API Gateway 如何限流與保護後端
+- 非同步寫入如何削峰填谷
+- 最終一致性如何透過前端體驗補償
+- CI 如何避免程式碼變更破壞既有功能
+
+因此本專案同時具備：
+
+- 實作題完整性
+- 後端分層架構
+- 資料庫交易設計
+- 系統設計教學價值
+- 工程化與 CI/CD 思維
