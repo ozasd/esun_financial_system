@@ -75,16 +75,19 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
             throw new BadRequestException("Duplicate request, please try again later");
         }
 
-        // 呼叫 Repository 寫入 DB
-        long sn = favoriteProductRepository.postFavoriteProduct(
-                request.userId(),
-                request.productNo(),
-                request.purchaseQuantity(),
-                request.account());
+        // 將請求轉為 JSON，推入 Redis List (Queue) 以非同步處理
+        try {
+            String orderJson = objectMapper.writeValueAsString(request);
+            redisTemplate.opsForList().leftPush("queue:favorite_products", orderJson);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to enqueue post favorite product request", e);
+        }
 
-        // 清除快取
+        // 提早清除快取 (雖然是最終一致性，但提早清除可以讓後續查詢拿到最新狀態，或者讀到 DB 還沒更新的舊狀態)
         evictUserCache(request.userId());
-        return sn;
+
+        // 因為非同步，無法立即得知 DB 生成的 sn，先回傳 0 代表已受理 (Accepted)
+        return 0L;
     }
 
     // 查詢清單商業邏輯

@@ -22,6 +22,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.ListOperations;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -38,6 +39,9 @@ class FavoriteProductServiceImplTest {
 
     @Mock
     private ValueOperations<String, String> valueOperations;
+
+    @Mock
+    private ListOperations<String, String> listOperations;
 
     @InjectMocks
     private FavoriteProductServiceImpl favoriteProductService;
@@ -89,7 +93,7 @@ class FavoriteProductServiceImplTest {
     }
 
     @Test
-    void postFavoriteProductDelegatesValidatedDataToRepository() {
+    void postFavoriteProductEnqueuesValidatedDataToRedis() throws Exception {
         PostFavoriteProductRequest request = new PostFavoriteProductRequest(
                 "A1236456789",
                 1L,
@@ -98,13 +102,13 @@ class FavoriteProductServiceImplTest {
 
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.setIfAbsent(anyString(), eq("1"), any())).thenReturn(true);
-        when(favoriteProductRepository.postFavoriteProduct("A1236456789", 1L, 2, "1111999666"))
-                .thenReturn(9L);
+        when(redisTemplate.opsForList()).thenReturn(listOperations);
+        when(objectMapper.writeValueAsString(request)).thenReturn("{\"userId\":\"A1236456789\"}");
 
         long sn = favoriteProductService.postFavoriteProduct(request);
 
-        assertThat(sn).isEqualTo(9L);
-        verify(favoriteProductRepository)
-                .postFavoriteProduct("A1236456789", 1L, 2, "1111999666");
+        assertThat(sn).isEqualTo(0L);
+        verify(listOperations).leftPush("queue:favorite_products", "{\"userId\":\"A1236456789\"}");
+        verifyNoInteractions(favoriteProductRepository);
     }
 }

@@ -58,10 +58,31 @@ async function submitForm() {
   try {
     if (editMode.value) {
       await favoriteApi.updateFavorite(editSn.value, { productNo: Number(form.value.productNo), purchaseQuantity: Number(form.value.purchaseQuantity), account: form.value.account })
+      showForm.value = false; fetchLikeList()
     } else {
       await favoriteApi.createFavorite({ userId: form.value.userId, productNo: Number(form.value.productNo), purchaseQuantity: Number(form.value.purchaseQuantity), account: form.value.account })
+      showForm.value = false;
+      
+      // Optimistic UI 樂觀更新：立刻在畫面上顯示假資料，讓使用者覺得沒有延遲
+      const userItem = likeList.value.find(u => u.userId === form.value.userId)
+      if (userItem) {
+        const prod = products.value.find(p => String(p.no) === String(form.value.productNo))
+        if (!userItem.favoriteProducts) userItem.favoriteProducts = []
+        userItem.favoriteProducts.push({
+          sn: Date.now(), // 假的暫時 ID
+          productNo: form.value.productNo,
+          productName: prod ? prod.productName : '處理中...',
+          purchaseQuantity: form.value.purchaseQuantity,
+          totalFee: '...', // 後端非同步計算中
+          totalAmount: '...', // 後端非同步計算中
+          account: form.value.account
+        })
+      }
+      
+      // Polling：由於後端 Worker 大約 1 秒消費一次佇列，延遲刷新確保拿到最新 DB 資料
+      setTimeout(fetchLikeList, 1200)
+      setTimeout(fetchLikeList, 2500)
     }
-    showForm.value = false; fetchLikeList()
   } catch (e) { formError.value = e.response?.data?.message || '操作失敗' }
 }
 

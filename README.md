@@ -18,6 +18,8 @@
 5. **防止重複提交 (Idempotency 冪等性)**：利用 Redis 的 `SETNX` 機制，阻擋短時間內的重複操作。
 6. **聚合查詢優化 (JSON_AGG)**：解決 ORM 常見的 N+1 Query 效能瓶頸。
 7. **資料庫索引優化 (Database Indexing)**：針對常用查詢欄位與關聯欄位建立索引，大幅提升檢索速度。
+8. **非同步處理與削峰填谷 (Async Processing)**：使用 Redis Queue 搭配背景 Worker 消化寫入請求，大幅提升系統瞬間吞吐量。
+9. **前端樂觀更新 (Optimistic UI)**：針對非同步 API 的最終一致性 (Eventual Consistency) 問題，在前端利用假資料與輪詢確保使用者體驗無縫接軌。
 
 ---
 
@@ -138,6 +140,27 @@ sequenceDiagram
         ON "Product" (price);
     ```
 
+### 8. 非同步處理與削峰填谷 (Async Processing)
+對於不需立即獲得資料庫主鍵的回應（如新增紀錄），我們將 `POST` 請求轉化為 JSON 推入 Redis List，隨即回傳受理狀態給前端。並由獨立的背景 Worker 每秒定時消化佇列，避免瞬間大量連線壓垮 PostgreSQL。
+
+* **程式碼標記**：
+  * **API 推入佇列**：見 `backend/src/main/java/com/esun/financialsystem/business/service/impl/FavoriteProductServiceImpl.java` 內的 `postFavoriteProduct` 方法。
+  * **背景 Worker**：見 `backend/src/main/java/com/esun/financialsystem/business/worker/FavoriteProductWorker.java`，透過 `@Scheduled` 排程搭配 `rightPop` 消化任務。
+
+### 9. 前端樂觀更新 (Optimistic UI) 應對最終一致性
+當後端改為非同步處理時，資料寫入會產生「最終一致性 (Eventual Consistency)」的延遲。如果前端在送出表單後立刻重新拉取 API，可能會看不到最新資料。為了彌補這段時間差，我們在前端實作了樂觀更新。
+
+* **程式碼標記與範例寫法**：
+  * **Vue 樂觀更新與輪詢**：見 `frontend/src/components/FavoritePanel.vue` 的 `submitForm` 函數。
+    ```javascript
+    // 樂觀更新：立刻在畫面上顯示假資料（狀態顯示為處理中）
+    userItem.favoriteProducts.push({ sn: Date.now(), productName: '處理中...' /* ... */ });
+    
+    // 輪詢：延遲刷新確保拿到 Worker 寫入後的最新 DB 資料
+    setTimeout(fetchLikeList, 1200);
+    setTimeout(fetchLikeList, 2500);
+    ```
+
 ---
 
 ## 專案結構
@@ -166,15 +189,17 @@ sequenceDiagram
 │   └── Dockerfile           Multi-stage build（Node → Nginx）
 ├── gateway/               Kong DB-less 宣告式設定 (實作 Rate Limiting)
 │   └── kong.yml
-└── docker-compose.yml       多服務容器編排 (包含 Redis, Kong, DB, 雙 Backend 節點)
+└── docker-compose.yml       多服務容器編排 (包含 Redis, Kong, DB, Backend API, Backend Worker)
 ```
 
 ## 系統架構
 
 ```txt
 瀏覽器 → Nginx (:3000) ─┬─ /*      → Vue SPA 靜態檔案
-                        └─ /api/* → Kong (:8000) → Spring Boot backend x2 (:8080) ↔ Redis Cache (:6379)
+                        └─ /api/* → Kong (:8000) → Spring Boot backend x2 (:8080) ↔ Redis Cache & Queue (:6379)
                                                                                   ↘ PostgreSQL (:5432)
+                                                                                    ↑ (非同步寫入)
+                                                                                    Spring Boot Worker 
 ```
 
 ### 技術棧
@@ -236,7 +261,7 @@ API Gateway 預設 Base URL：`http://localhost:8000`
 *(本區塊 API 已受 Redis 快取與冪等性防護)*
 
 - `GET /api/favorite-products/like-list`
-- `POST /api/favorite-products` *(具備 10 秒冪等性阻擋)*
+- `POST /api/favorite-products` *(具備 10 秒冪等性阻擋與非同步 Message Queue 寫入)*
 - `GET /api/favorite-products/users/{userId}` *(具備 Redis 讀取快取與防雪崩)*
 - `PUT /api/favorite-products/{sn}` *(更新後會主動 Evict 舊快取)*
 - `DELETE /api/favorite-products/{sn}` *(刪除後會主動 Evict 舊快取)*
