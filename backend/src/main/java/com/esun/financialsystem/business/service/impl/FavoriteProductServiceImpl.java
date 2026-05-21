@@ -130,7 +130,8 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
             long ttlSeconds = 300 + ThreadLocalRandom.current().nextInt(301);
             redisTemplate.opsForValue().set(cacheKey, jsonData, ttlSeconds, TimeUnit.SECONDS);
         } catch (Exception e) {
-            // Ignore cache write errors
+            System.err.println("Cache write error: " + e.getMessage());
+            e.printStackTrace();
         }
 
         return dbResult;

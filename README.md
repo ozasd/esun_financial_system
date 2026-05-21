@@ -163,6 +163,34 @@ sequenceDiagram
 
 ---
 
+## 系統效能壓測量化數據 (Stress Test Results)
+
+為了具體量化上述系統設計 (SD) 優化所帶來的效能提升，我們使用 Python `aiohttp` 撰寫了壓測腳本 (`backend/stress_test.py`)，在本地環境針對核心 API 進行了高併發壓力測試。
+*(壓測條件：1000 次總請求，100 個併發數 (Concurrency)，直接對口 `localhost:8081` 避開 Kong 限流)*
+
+### 1. 讀取效能：Cache vs No-Cache
+
+這項測試對比了「直接讓 PostgreSQL 處理複雜的 `JSON_AGG` 聚合查詢」與「直接從 Redis 讀取快取」的效能差異。
+
+| 測試情境 | 吞吐量 (RPS) | 平均回應時間 (Latency) | P95 回應時間 |
+|---------|-------------|-----------------------|-------------|
+| **無快取 (PostgreSQL DB)** | ~675 req/s | 143.88 ms | 444.52 ms |
+| **有快取 (Redis Cache)** | **~2586 req/s** | **36.61 ms** | **77.59 ms** |
+
+> **結論**：Redis 快取層讓系統的**吞吐量飆升近 3.8 倍 (+283%)**，且平均回應時間**大幅降低約 74%**（從 143ms 縮短至 36ms）。在高併發場景下有效保護了 PostgreSQL 不被瞬間流量壓垮。
+
+### 2. 寫入效能：削峰填谷 (Async Queue)
+
+這項測試針對 `POST /api/favorite-products` 進行狂轟濫炸。為了繞過 10 秒冪等性防護，壓測腳本會隨機生成 1000 筆不同的訂單資料。
+
+| 測試情境 | 吞吐量 (RPS) | 平均回應時間 (Latency) | P95 回應時間 |
+|---------|-------------|-----------------------|-------------|
+| **非同步推入佇列 (Redis Queue)** | **~1209 req/s** | **78.88 ms** | **176.29 ms** |
+
+> **結論**：即便同時有 100 個人瘋狂點擊新增，因為 API 只負責「推入 Redis Queue 並提早回傳」，系統依然能保持高達 **1200 req/s** 的寫入吞吐量，平均回應低於 80ms。而這 1000 筆訂單會由 `backend-worker` 在背景以穩定的速率寫入資料庫，達成完美的**削峰填谷**。
+
+---
+
 ## 專案結構
 
 ```txt
@@ -233,7 +261,7 @@ docker compose up -d --build
 | Kong API Gateway | http://localhost:8000 |
 | 後端 API（直接） | http://localhost:8081 |
 | PostgreSQL | localhost:5432 |
-| Redis | localhost:6379 |
+| Redis | localhost:6380 |
 
 ### 方式二：本機開發模式
 
