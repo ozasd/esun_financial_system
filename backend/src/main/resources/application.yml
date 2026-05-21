@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: esun-financial-system
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:esun_financial_system}
+    username: ${DB_USERNAME:esun_app_user}
+    password: ${DB_PASSWORD:EsunFinanceDB_2026!Secure}
+    driver-class-name: org.postgresql.Driver
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always

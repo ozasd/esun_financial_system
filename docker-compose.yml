@@ -11,15 +11,42 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./DB/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./DB/02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
-      - ./DB/03_procedures.sql:/docker-entrypoint-initdb.d/03_procedures.sql:ro
-      - ./DB/04_indexes.sql:/docker-entrypoint-initdb.d/04_indexes.sql:ro
+      - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./db/02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./db/03_procedures.sql:/docker-entrypoint-initdb.d/03_procedures.sql:ro
+      - ./db/04_indexes.sql:/docker-entrypoint-initdb.d/04_indexes.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U esun_app_user -d esun_financial_system"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - sharednetwork
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: esun-financial-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: esun_financial_system
+      DB_USERNAME: esun_app_user
+      DB_PASSWORD: "EsunFinanceDB_2026!Secure"
+      SERVER_PORT: 8080
+    ports:
+      - "8081:8080"
+    networks:
+      - sharednetwork
 
 volumes:
   postgres_data:
+
+networks:
+  sharednetwork:
+    name: esun-financial-sharednetwork
