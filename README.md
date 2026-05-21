@@ -181,6 +181,39 @@ mvn spring-boot:run
 | DB User | esun_app_user |
 | DB Password | EsunFinanceDB_2026!Secure |
 
+## 測試與 CI
+
+後端測試包含 Service 單元測試與 PostgreSQL Testcontainers 整合測試，會載入 `db/` 內的 schema、seed、procedure、index SQL：
+
+```sh
+cd backend
+mvn test
+```
+
+若本機未安裝 Maven，可用 Maven Docker image 執行：
+
+```sh
+# 於專案根目錄執行
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v "$HOME/.m2":/root/.m2 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  -w /workspace/backend \
+  maven:3.9.9-eclipse-temurin-17 mvn -B test
+```
+
+前端測試使用 Vitest + Vue Test Utils：
+
+```sh
+cd frontend
+npm ci
+npm run test
+npm run build
+```
+
+GitHub Actions workflow 位於 `.github/workflows/ci.yml`，會在 push / pull request 自動執行後端測試、前端測試與 Docker Compose 設定檢查。
+
 ## API 快速導覽
 
 API Gateway 預設 Base URL：
