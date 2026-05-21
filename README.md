@@ -1,18 +1,84 @@
-# Esun Financial System
+# Esun Financial System (高併發與系統設計優化範例)
 
 ## 專案簡介
 
-本專案為一套金融商品喜好紀錄系統，採用前後端分離架構。後端以 Spring Boot + PostgreSQL 提供 RESTful API，前端以 Vue 3 + Vite 建置單頁應用，透過 Nginx 提供靜態資源，並以 Kong API Gateway 做 L7 負載均衡與 API 限流，整合於 Docker Compose 一鍵啟動。
+本專案為一套金融商品喜好紀錄系統，除了提供基礎的 CRUD 功能外，更作為一個**系統設計 (System Design, SD) 的學習教材**。
+專案採用前後端分離架構，並實作了多項應對高併發、資料一致性與高可用性的架構設計，包含 API Gateway 限流、Redis 快取與防雪崩機制、冪等性設計 (Idempotency) 以及 PostgreSQL 的行鎖與聚合查詢優化。
+
+---
+
+## 🚀 系統特色與架構亮點 (System Features)
+
+本系統不僅僅是 Spring Boot + Vue 的簡單應用，更融合了以下業界常見的微服務與高併發架構設計：
+
+1. **L7 負載均衡與 API 閘道器 (Kong API Gateway)**：所有外部請求先經過 Kong 進行限流 (Rate Limiting) 與 Round-robin 負載均衡，再轉發至後端多個實例。
+2. **高併發讀取快取 (Redis Caching)**：使用 Redis 快取頻繁讀取的資料，大幅降低資料庫壓力。
+3. **防止快取雪崩 (Cache Avalanche Prevention)**：採用「基礎時間 + 隨機時間」的 TTL 設計，避免大量快取在同一時間失效。
+4. **資料庫層級的強一致性 (PostgreSQL 行鎖)**：透過 `SELECT ... FOR UPDATE` 避免 Race Condition，確保交易正確性。
+5. **防止重複提交 (Idempotency 冪等性)**：利用 Redis 的 `SETNX` 機制，阻擋短時間內的重複操作。
+6. **聚合查詢優化 (JSON_AGG)**：解決 ORM 常見的 N+1 Query 效能瓶頸。
+
+---
+
+## 📖 系統設計 (SD) 優化解析教材
+
+以下詳細說明本專案如何解決常見的系統設計問題，並標示了對應的程式碼位置供學習參考：
+
+### 1. 應對高併發讀取：Redis 快取與防止快取雪崩
+在高併發場景中，直接讀取資料庫會造成極大壓力。我們將使用者的最愛清單讀取加入 Redis 快取。
+為了解決**快取雪崩 (Cache Avalanche)** (即大量快取同時過期，導致請求瞬間湧入資料庫)，我們在設定快取時加入了隨機過期時間 (Jitter)。
+此外，我們也實作了**快取失效 (Cache Eviction)**，當資料被更新或刪除時，主動清除快取以避免讀到舊資料。
+
+* **程式碼標記**：
+  * **寫入快取與隨機 TTL**：見 `backend/src/main/java/com/esun/financialsystem/business/service/impl/FavoriteProductServiceImpl.java` 內的 `getFavoriteProductsByUser` 方法。
+    ```java
+    // 基礎過期時間 5 分鐘 (300秒) + 隨機 0~300 秒，防止快取雪崩
+    long ttlSeconds = 300 + ThreadLocalRandom.current().nextInt(301);
+    redisTemplate.opsForValue().set(cacheKey, jsonData, ttlSeconds, TimeUnit.SECONDS);
+    ```
+  * **快取清除 (Eviction)**：見同檔案內的 `putFavoriteProduct` 與 `deleteFavoriteProduct` 方法呼叫的 `evictUserCache(userId)`。
+
+### 2. 避免重複提交與 Race Condition：Redis 冪等性 (Idempotency) 與 DB 行鎖
+當使用者因為網路延遲連續點擊新增按鈕時，系統可能會寫入重複資料。我們採用雙層防護：
+1. **Redis 冪等性**：利用 Redis 的 `setIfAbsent` (即 SETNX) 鎖住特定請求參數 10 秒鐘。
+2. **DB 行鎖 (Pessimistic Lock)**：在 PostgreSQL 存儲過程中，利用 `FOR UPDATE` 鎖住關聯的 `User` 與 `Product` 資料列，確保在高併發下，同一筆資料庫紀錄不會被交錯修改。
+
+* **程式碼標記**：
+  * **Redis 冪等性檢查**：見 `FavoriteProductServiceImpl.java` 的 `postFavoriteProduct` 方法。
+    ```java
+    Boolean success = redisTemplate.opsForValue().setIfAbsent(idempotencyKey, "1", Duration.ofSeconds(10));
+    if (Boolean.FALSE.equals(success)) {
+        throw new BadRequestException("Duplicate request, please try again later");
+    }
+    ```
+  * **PostgreSQL FOR UPDATE 行鎖**：見 `db/03_procedures.sql` 的 `sp_add_favorite_product` 函數。
+    ```sql
+    PERFORM 1 FROM "User" AS u WHERE u.user_id = p_user_id FOR UPDATE;
+    ```
+
+### 3. 資料庫查詢優化：解決 N+1 Query
+查詢關聯資料時（例如查詢 User 與其下的所有 Favorite Products），若使用傳統做法會產生 $1 + N$ 次查詢。我們改為在 PostgreSQL 內直接使用 `JSON_AGG` 將多筆商品聚合成 JSON 字串回傳，大幅減少 DB 連線次數與傳輸成本。
+
+* **程式碼標記**：
+  * **JSON_AGG 聚合查詢**：見 `db/03_procedures.sql` 的 `sp_get_like_list` 函數。
+
+### 4. 系統限流保護：API Gateway (Kong) Rate Limiting
+為了防止惡意攻擊或單一使用者過度消耗系統資源，我們在 Kong API Gateway 層級加上了 Rate Limiting 插件，設定每個 IP 每分鐘最多只能請求 120 次。
+
+* **程式碼標記**：
+  * **限流設定**：見 `gateway/kong.yml` 中的 `plugins` 設定。
+
+---
 
 ## 專案結構
 
 ```txt
 .
-├── backend/               Spring Boot Maven 後端專案
+├── backend/               Spring Boot Maven 後端專案 (實作 Redis Cache, Idempotency)
 │   ├── src/main/java/     Java 原始碼（presentation / business / data / common）
 │   ├── src/main/resources/ application.yml
 │   └── Dockerfile
-├── db/                    PostgreSQL 建表、初始化資料、存儲程式與索引
+├── db/                    PostgreSQL 建表、初始化資料、存儲程式與索引 (實作行鎖與聚合查詢)
 │   ├── 01_schema.sql
 │   ├── 02_seed.sql
 │   ├── 03_procedures.sql
@@ -28,16 +94,17 @@
 │   │       └── ProductPanel.vue    商品管理 CRUD
 │   ├── nginx.conf           Nginx 反向代理設定
 │   └── Dockerfile           Multi-stage build（Node → Nginx）
-├── gateway/               Kong DB-less 宣告式設定
+├── gateway/               Kong DB-less 宣告式設定 (實作 Rate Limiting)
 │   └── kong.yml
-└── docker-compose.yml       多服務容器編排
+└── docker-compose.yml       多服務容器編排 (包含 Redis, Kong, DB, 雙 Backend 節點)
 ```
 
 ## 系統架構
 
 ```txt
 瀏覽器 → Nginx (:3000) ─┬─ /*      → Vue SPA 靜態檔案
-                        └─ /api/* → Kong (:8000) → Spring Boot backend x2 (:8080) → PostgreSQL (:5432)
+                        └─ /api/* → Kong (:8000) → Spring Boot backend x2 (:8080) ↔ Redis Cache (:6379)
+                                                                                  ↘ PostgreSQL (:5432)
 ```
 
 ### 技術棧
@@ -47,85 +114,17 @@
 | 前端 | Vue 3、Vite、Axios |
 | Web Server | Nginx 1.27（反向代理 + 靜態資源） |
 | API Gateway | Kong Gateway（DB-less mode、L7 Round-robin、Rate Limiting） |
-| 後端 | Java 17、Spring Boot 3、Spring Web、Spring JDBC |
-| 資料庫 | PostgreSQL 16、Stored Procedure |
-| 建置工具 | Maven（後端）、npm（前端） |
-| 容器化 | Docker Compose（postgres + backend + frontend） |
+| 後端 | Java 17、Spring Boot 3、Spring Data Redis、Spring Web、Spring JDBC |
+| 資料庫 | PostgreSQL 16 (Stored Procedure)、Redis 7 |
+| 容器化 | Docker Compose |
 
-### 後端套件結構
-
-```txt
-backend/src/main/java/com/esun/financialsystem
-├── presentation       REST API 控制器、Request/Response DTO
-│   ├── controller
-│   ├── request
-│   └── response
-├── business           商業邏輯服務、輸入驗證
-│   └── service
-├── data               JDBC repository、SQL 定義、RowMapper、資料模型
-│   ├── mapper
-│   ├── model
-│   ├── repository
-│   └── sql
-└── common             共用例外處理、CORS 設定
-    └── exception
-```
-
-### 前端功能
-
-前端為單頁應用（SPA），透過 Tab 切換三個功能面板：
-
-| Tab | 功能 | 對應 API |
-|-----|------|----------|
-| ❤️ 喜好商品 | 查詢 LikeList 清單（搜尋/排序/分頁）、新增/編輯/刪除收藏商品 | `/api/favorite-products/*` |
-| 👤 使用者管理 | 使用者 CRUD、搜尋 | `/api/users/*` |
-| 📦 商品管理 | 金融商品 CRUD、搜尋/排序 | `/api/products/*` |
-
-## 資料庫設計
-
-核心資料模型：
-
-- `User` 1 對多 `LikeList`
-- `Product` 1 對多 `LikeList`
-- `User` 與 `Product` 透過 `LikeList` 建立多對多關係
-
-`LikeList` 同時作為關聯表與收藏商品的商業資料儲存區，包含：
-
-- `purchase_quantity`
-- `account`
-- `total_fee`
-- `total_amount`
-
-### 資料庫效能優化
-
-- LikeList 查詢使用 `JSON_AGG` 聚合收藏商品，避免逐筆查詢造成 N+1 query。
-- Join 與常用篩選欄位建立索引，例如 `LikeList(user_id, sn)`、`LikeList(product_no)`、`LikeList(account)`。
-- User / Product 常用排序與範圍查詢欄位建立索引，例如 `user_name`、`email`、`price`、`fee_rate`、`created_at`。
-
-### 交易一致性與併發控制
-
-- Favorite Product 新增、修改、刪除由 PostgreSQL Stored Procedure 執行，資料異動集中在資料庫端。
-- Service mutation 方法使用 Spring `@Transactional`，確保同一次異動在交易內完成。
-- Stored Procedure 針對異動相關資料使用 `SELECT ... FOR UPDATE` 鎖定 row，避免高併發下同一筆資料被重複或交錯更新。
-- 前端針對 `POST`、`PUT`、`PATCH`、`DELETE` 自動帶入 `Idempotency-Key` header，後續可接 Redis 或資料庫表做重複請求判斷。
-
-### PostgreSQL 連線設定
-
-```txt
-Host: localhost
-Port: 5432
-Database: esun_financial_system
-User: esun_app_user
-Password: EsunFinanceDB_2026!Secure
-```
-
-資料庫初始化時，`db/` 資料夾內的 SQL 檔案會掛載到容器的 `/docker-entrypoint-initdb.d/`，並於第一次建立資料卷時自動執行。
+---
 
 ## 開發與啟動方式
 
 ### 方式一：Docker Compose 全套啟動（推薦）
 
-一鍵啟動 PostgreSQL + 兩個 Spring Boot backend + Kong + Nginx 前端：
+一鍵啟動 PostgreSQL + Redis + 兩個 Spring Boot backend + Kong + Nginx 前端：
 
 ```sh
 docker compose up -d --build
@@ -137,17 +136,17 @@ docker compose up -d --build
 |------|------|
 | 前端（Nginx） | http://localhost:3000 |
 | Kong API Gateway | http://localhost:8000 |
-| Kong Admin API | http://localhost:8001 |
 | 後端 API（直接） | http://localhost:8081 |
 | PostgreSQL | localhost:5432 |
+| Redis | localhost:6379 |
 
 ### 方式二：本機開發模式
 
 適合前端開發時使用，Vite Dev Server 提供 HMR 熱更新：
 
 ```sh
-# 1. 啟動資料庫、後端與 Kong
-docker compose up -d postgres backend kong
+# 1. 啟動基礎設施
+docker compose up -d postgres redis backend kong
 
 # 2. 啟動前端 dev server（Vite proxy 自動轉發 /api → localhost:8000）
 cd frontend
@@ -157,78 +156,20 @@ npm run dev
 
 前端 dev server：http://localhost:5173
 
-### 方式三：僅啟動部分服務
-
-```sh
-# 僅啟動 PostgreSQL
-docker compose up -d postgres
-
-# 本機直接啟動後端（需先啟動 PostgreSQL）
-cd backend
-mvn spring-boot:run
-```
-
-### 服務連線設定
-
-| 項目 | 值 |
-|------|----|
-| Backend Port | 8081（Docker 對外）/ 8080（容器內） |
-| Backend Replica Port | 8082（Docker 對外）/ 8080（容器內） |
-| Kong Proxy Port | 8000 |
-| Kong Admin Port | 8001 |
-| Frontend Port | 3000（Nginx）/ 5173（Vite dev） |
-| DB URL | jdbc:postgresql://localhost:5432/esun_financial_system |
-| DB User | esun_app_user |
-| DB Password | EsunFinanceDB_2026!Secure |
-
-## 測試與 CI
-
-後端測試包含 Service 單元測試與 PostgreSQL Testcontainers 整合測試，會載入 `db/` 內的 schema、seed、procedure、index SQL：
-
-```sh
-cd backend
-mvn test
-```
-
-若本機未安裝 Maven，可用 Maven Docker image 執行：
-
-```sh
-# 於專案根目錄執行
-docker run --rm \
-  -v "$PWD":/workspace \
-  -v "$HOME/.m2":/root/.m2 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
-  -w /workspace/backend \
-  maven:3.9.9-eclipse-temurin-17 mvn -B test
-```
-
-前端測試使用 Vitest + Vue Test Utils：
-
-```sh
-cd frontend
-npm ci
-npm run test
-npm run build
-```
-
-GitHub Actions workflow 位於 `.github/workflows/ci.yml`，會在 push / pull request 自動執行後端測試、前端測試與 Docker Compose 設定檢查。
+---
 
 ## API 快速導覽
 
-API Gateway 預設 Base URL：
-
-```txt
-http://localhost:8000
-```
+API Gateway 預設 Base URL：`http://localhost:8000`
 
 ### Favorite Product（收藏商品）API
+*(本區塊 API 已受 Redis 快取與冪等性防護)*
 
 - `GET /api/favorite-products/like-list`
-- `POST /api/favorite-products`
-- `GET /api/favorite-products/users/{userId}`
-- `PUT /api/favorite-products/{sn}`
-- `DELETE /api/favorite-products/{sn}`
+- `POST /api/favorite-products` *(具備 10 秒冪等性阻擋)*
+- `GET /api/favorite-products/users/{userId}` *(具備 Redis 讀取快取與防雪崩)*
+- `PUT /api/favorite-products/{sn}` *(更新後會主動 Evict 舊快取)*
+- `DELETE /api/favorite-products/{sn}` *(刪除後會主動 Evict 舊快取)*
 
 ### User API
 
@@ -246,281 +187,5 @@ http://localhost:8000
 - `PUT /api/products/{no}`
 - `DELETE /api/products/{no}`
 
-### LikeList 查詢參數
-
-```txt
-userId
-userName
-email
-account
-keyword
-page
-pageSize
-sortBy        => user_id | user_name | email | account
-sortDirection => ASC | DESC
-```
-
-範例查詢：
-
-```txt
-GET /api/favorite-products/like-list?page=1&pageSize=10&keyword=王&sortBy=user_id&sortDirection=ASC
-```
-
-## Docker Compose 服務
-
-| 服務 | 容器名稱 | 映像 | Port |
-|------|----------|------|------|
-| postgres | esun-financial-postgres | postgres:16.14-alpine | 5432 |
-| backend | esun-financial-backend | 自建（Maven + JDK 17） | 8081→8080 |
-| backend-replica | esun-financial-backend-replica | 自建（Maven + JDK 17） | 8082→8080 |
-| kong | esun-financial-kong | kong:3.9 | 8000、8001 |
-| frontend | esun-financial-frontend | 自建（Node build → Nginx 1.27） | 3000→80 |
-
-Nginx 設定（`frontend/nginx.conf`）：
-
-- `/` → 提供 Vue SPA 靜態檔案，搭配 `try_files` fallback
-- `/api/` → `proxy_pass http://kong:8000/api/`（經 Kong API Gateway 轉發）
-- 啟用 Gzip 壓縮與靜態資源快取
-
-Kong 設定（`gateway/kong.yml`）：
-
-- DB-less mode，不需要 Kong 自己的資料庫。
-- `/api/*` → `esun-backend-upstream`，以 Round-robin 分流到 `backend:8080` 與 `backend-replica:8080`。
-- `/actuator/*` → 同一組 backend upstream，用於健康檢查與除錯。
-- upstream active/passive health check 使用 `/actuator/health` 判斷 backend 是否可用。
-- `/api/*` 套用 rate limiting，每個來源 IP 每分鐘最多 120 次請求。
-- 目前限流使用 Kong local policy；單一 Kong instance 足夠，若未來部署多個 Kong 節點，可改用 Redis policy 共享限流狀態。
-- 目前不啟用認證、黑白名單等其他治理規則。
-
-## 安全性設計
-
-### SQL Injection 防護
-
-- 所有 JDBC 查詢使用 `JdbcTemplate` + `?` 參數化查詢（PreparedStatement）
-- Favorite Product CUD 與 LikeList 查詢透過 PostgreSQL Stored Procedure，參數型別在函數簽名中定義
-- `ORDER BY` 欄位使用白名單或 Stored Procedure 內的固定 `CASE` 條件，排序方向僅允許 `ASC` / `DESC`
-
-### XSS 防護
-
-- 前端使用 Vue 3 模板語法（`{{ }}`），預設自動 HTML 轉義
-- 後端回應 JSON 格式，不直接輸出 HTML
-
-#### `GET /api/users/{userId}`
-
-Example:
-
-```bash
-curl "http://localhost:8000/api/users/A1236456789"
-```
-
-#### `POST /api/users`
-
-Request body:
-
-```json
-{
-  "userId": "C3234567891",
-  "userName": "陳小美",
-  "email": "chen@example.com",
-  "account": "3333777888"
-}
-```
-
-Example:
-
-```bash
-curl -X POST "http://localhost:8000/api/users" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":"C3234567891","userName":"陳小美","email":"chen@example.com","account":"3333777888"}'
-```
-
-#### `PUT /api/users/{userId}`
-
-Request body:
-
-```json
-{
-  "userName": "陳小美-更新",
-  "email": "chen.updated@example.com",
-  "account": "3333777888"
-}
-```
-
-Example:
-
-```bash
-curl -X PUT "http://localhost:8000/api/users/C3234567891" \
-  -H "Content-Type: application/json" \
-  -d '{"userName":"陳小美-更新","email":"chen.updated@example.com","account":"3333777888"}'
-```
-
-#### `DELETE /api/users/{userId}`
-
-Example:
-
-```bash
-curl -X DELETE "http://localhost:8000/api/users/C3234567891"
-```
-
-### 2. Product CRUD
-
-#### `GET /api/products`
-
-Query parameters:
-
-```txt
-no
-productName
-keyword
-priceMin
-priceMax
-feeRateMin
-feeRateMax
-page           default 1
-pageSize       default 10, max 100
-sortBy         => no | product_name | price | fee_rate | created_at | updated_at
-sortDirection  => ASC | DESC
-```
-
-Example:
-
-```bash
-curl "http://localhost:8000/api/products?page=1&pageSize=10&keyword=基金&priceMin=10000&priceMax=20000&sortBy=no&sortDirection=ASC"
-```
-
-#### `GET /api/products/{no}`
-
-Example:
-
-```bash
-curl "http://localhost:8000/api/products/1"
-```
-
-#### `POST /api/products`
-
-Request body:
-
-```json
-{
-  "productName": "亞洲平衡基金",
-  "price": 22000,
-  "feeRate": 0.011
-}
-```
-
-Example:
-
-```bash
-curl -X POST "http://localhost:8000/api/products" \
-  -H "Content-Type: application/json" \
-  -d '{"productName":"亞洲平衡基金","price":22000,"feeRate":0.011}'
-```
-
-#### `PUT /api/products/{no}`
-
-Request body:
-
-```json
-{
-  "productName": "亞洲平衡基金-更新",
-  "price": 22500,
-  "feeRate": 0.012
-}
-```
-
-Example:
-
-```bash
-curl -X PUT "http://localhost:8000/api/products/6" \
-  -H "Content-Type: application/json" \
-  -d '{"productName":"亞洲平衡基金-更新","price":22500,"feeRate":0.012}'
-```
-
-#### `DELETE /api/products/{no}`
-
-Example:
-
-```bash
-curl -X DELETE "http://localhost:8000/api/products/6"
-```
-
-### 3. Favorite Product CRUD
-
-#### `GET /api/favorite-products/like-list`
-
-Query parameters:
-
-```txt
-userId
-userName
-email
-account
-keyword
-page           default 1
-pageSize       default 10, max 100
-sortBy         => user_id | user_name | email | account
-sortDirection  => ASC | DESC
-```
-
-Example:
-
-```bash
-curl "http://localhost:8000/api/favorite-products/like-list?page=1&pageSize=10&keyword=王&sortBy=user_id&sortDirection=ASC"
-```
-
-#### `POST /api/favorite-products`
-
-Request body:
-
-```json
-{
-  "userId": "A1236456789",
-  "productNo": 1,
-  "purchaseQuantity": 2,
-  "account": "1111999666"
-}
-```
-
-Example:
-
-```bash
-curl -X POST "http://localhost:8000/api/favorite-products" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":"A1236456789","productNo":1,"purchaseQuantity":2,"account":"1111999666"}'
-```
-
-#### `GET /api/favorite-products/users/{userId}`
-
-Example:
-
-```bash
-curl "http://localhost:8000/api/favorite-products/users/A1236456789"
-```
-
-#### `PUT /api/favorite-products/{sn}`
-
-Request body:
-
-```json
-{
-  "productNo": 2,
-  "purchaseQuantity": 3,
-  "account": "1111999666"
-}
-```
-
-Example:
-
-```bash
-curl -X PUT "http://localhost:8000/api/favorite-products/1" \
-  -H "Content-Type: application/json" \
-  -d '{"productNo":2,"purchaseQuantity":3,"account":"1111999666"}'
-```
-
-#### `DELETE /api/favorite-products/{sn}`
-
-Example:
-
-```bash
-curl -X DELETE "http://localhost:8000/api/favorite-products/1"
-```
+---
+*此專案除了滿足基礎商業需求外，更適合作為進階系統設計的參考範例。歡迎查閱各模組原始碼，深入了解實作細節！*
