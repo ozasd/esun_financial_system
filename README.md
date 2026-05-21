@@ -17,6 +17,7 @@
 4. **資料庫層級的強一致性 (PostgreSQL 行鎖)**：透過 `SELECT ... FOR UPDATE` 避免 Race Condition，確保交易正確性。
 5. **防止重複提交 (Idempotency 冪等性)**：利用 Redis 的 `SETNX` 機制，阻擋短時間內的重複操作。
 6. **聚合查詢優化 (JSON_AGG)**：解決 ORM 常見的 N+1 Query 效能瓶頸。
+7. **資料庫索引優化 (Database Indexing)**：針對常用查詢欄位與關聯欄位建立索引，大幅提升檢索速度。
 
 ---
 
@@ -120,6 +121,21 @@ sequenceDiagram
         config:
           minute: 120
           policy: local
+    ```
+
+### 7. 資料庫索引優化 (Database Indexing)
+對於經常被用作 JOIN 條件、WHERE 篩選條件，或是 ORDER BY 的欄位，建立適當的索引是提升關聯式資料庫查詢效能的關鍵。我們針對外鍵 (如 `user_id`, `product_no`) 與常用搜尋欄位 (如 `email`, `product_name`) 建立了資料庫索引。
+
+* **程式碼標記與範例寫法**：
+  * **建立索引指令**：見 `db/04_indexes.sql` 檔案。
+    ```sql
+    -- 針對 JOIN 與查詢條件建立複合索引
+    CREATE INDEX IF NOT EXISTS idx_like_list_user_id_sn
+        ON "LikeList" (user_id, sn);
+
+    -- 針對常用排序與搜尋欄位建立索引
+    CREATE INDEX IF NOT EXISTS idx_product_price
+        ON "Product" (price);
     ```
 
 ---
