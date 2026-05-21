@@ -1,6 +1,6 @@
-# Esun Financial System (高併發與系統設計優化範例)
+# Esun Financial System  
 
-## 專案簡介
+## 金融商品喜好紀錄系統｜玉山實作題 × 系統設計教學範例
 
 本專案為一套金融商品喜好紀錄系統，除了提供基礎的 CRUD 功能外，更作為一個**系統設計 (System Design, SD) 的學習教材**。
 專案採用前後端分離架構，並實作了多項應對高併發、資料一致性與高可用性的架構設計，包含 API Gateway 限流、Redis 快取與防雪崩機制、冪等性設計 (Idempotency) 以及 PostgreSQL 的行鎖與聚合查詢優化。
@@ -240,6 +240,18 @@ sequenceDiagram
 | 後端 | Java 17、Spring Boot 3、Spring Data Redis、Spring Web、Spring JDBC |
 | 資料庫 | PostgreSQL 16 (Stored Procedure)、Redis 7 |
 | 容器化 | Docker Compose |
+
+---
+
+## 持續整合 (Continuous Integration)
+
+本專案配置了 GitHub Actions 作為自動化 CI 流程 (`.github/workflows/ci.yml`)，在推送 (Push) 或建立 Pull Request 至 `main` 與 `dev` 分支時會自動執行檢查，確保程式碼變更不會破壞現有功能。
+
+CI 流程涵蓋以下三個維度的自動化檢測：
+
+1. **後端測試 (Backend Tests)**：建置 Java 17 環境，執行 `mvn test` 確保 Spring Boot 所有單元與整合測試皆能順利通過。
+2. **前端測試 (Frontend Tests)**：建置 Node 22 環境，執行 `npm run test` 進行前端測試，並執行 `npm run build` 確保 Vue 3 專案可成功編譯。
+3. **基礎設施檢查 (Docker Compose Config)**：驗證 `docker-compose.yml` 配置檔的語法與結構是否正確，確保容器編排無誤。
 
 ---
 
