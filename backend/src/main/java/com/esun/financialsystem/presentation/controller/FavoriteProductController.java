@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 // @RestController
@@ -90,17 +91,18 @@ public class FavoriteProductController {
     // POST /api/favorite-products
     // @RequestBody 代表接收 JSON body
     // @Valid 代表自動進行欄位驗證
-    // 回傳 HTTP 201 Created
+    // 回傳 HTTP 202 Accepted（非同步處理，請求已受理但尚未完成）
     // 類似 router.post("/")
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public FavoriteProductMutationResponse postFavoriteProduct(
             // 類似 req.body
-            @Valid @RequestBody PostFavoriteProductRequest request) {
+            @Valid @RequestBody PostFavoriteProductRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         // 呼叫 Service 執行新增邏輯
-        long sn = favoriteProductService.postFavoriteProduct(request);
+        long sn = favoriteProductService.postFavoriteProduct(request, idempotencyKey);
         // 類似 res.json({...})
-        return new FavoriteProductMutationResponse(sn, "Favorite product created");
+        return new FavoriteProductMutationResponse(sn, "Favorite product accepted");
     }
 
     // 查詢指定使用者的喜好商品

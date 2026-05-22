@@ -86,7 +86,7 @@ class FavoriteProductServiceImplTest {
                 1,
                 "1111999666");
 
-        assertThatThrownBy(() -> favoriteProductService.postFavoriteProduct(request))
+        assertThatThrownBy(() -> favoriteProductService.postFavoriteProduct(request, null))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessage("userId must not be blank");
         verifyNoInteractions(favoriteProductRepository);
@@ -105,9 +105,13 @@ class FavoriteProductServiceImplTest {
         when(redisTemplate.opsForList()).thenReturn(listOperations);
         when(objectMapper.writeValueAsString(request)).thenReturn("{\"userId\":\"A1236456789\"}");
 
-        long sn = favoriteProductService.postFavoriteProduct(request);
+        long sn = favoriteProductService.postFavoriteProduct(request, "fixed-idempotency-key");
 
         assertThat(sn).isEqualTo(0L);
+        verify(valueOperations).setIfAbsent(
+                eq("idempotency:postFavoriteProduct:A1236456789:fixed-idempotency-key"),
+                eq("1"),
+                any());
         verify(listOperations).leftPush("queue:favorite_products", "{\"userId\":\"A1236456789\"}");
         verifyNoInteractions(favoriteProductRepository);
     }

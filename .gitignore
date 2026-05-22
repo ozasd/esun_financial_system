@@ -20,6 +20,7 @@ buildNumber.properties
 node_modules/
 dist/
 coverage/
+.vite/
 
 # Test/build reports
 surefire-reports/

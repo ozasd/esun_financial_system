@@ -52,6 +52,53 @@
 
 ---
 
+## 目前完成狀態檢查
+
+| 類別 | 狀態 | 實作位置 |
+|---|---|---|
+| 題目核心 CRUD | 已完成 | `frontend/src/components/*Panel.vue`、`backend/src/main/java/com/esun/financialsystem/presentation/controller` |
+| 後端分層 | 已完成 | `presentation`、`business`、`data`、`common` |
+| JDBC + SQL 組合 | 已完成 | `data/repository/impl/*JdbcRepository.java`、`data/sql/*Sql.java` |
+| Stored Procedure | 已完成 | `db/03_procedures.sql` |
+| Transaction / Row Lock | 已完成 | Service `@Transactional`、Stored Procedure `FOR UPDATE` |
+| SQL Injection 防護 | 已完成 | JDBC placeholder、排序欄位白名單、Stored Procedure 參數化 |
+| XSS 防護 | 已完成 | Vue template binding 預設 escape，不使用 `v-html` |
+| JSON_AGG 查詢優化 | 已完成 | `sp_get_like_list` 使用 `JSON_AGG` / `JSON_BUILD_OBJECT` |
+| DB Index | 已完成 | `db/04_indexes.sql` |
+| Redis Cache | 已完成 | `FavoriteProductServiceImpl#getFavoriteProductsByUser` |
+| TTL Jitter | 已完成 | cache TTL 使用 300 秒 + 隨機 0 至 300 秒 |
+| Cache Eviction | 已完成 | 新增排隊前、Worker 寫入後、PUT/DELETE 成功後清除使用者 cache |
+| Idempotency Key | 已完成 | 前端 Axios 加 `Idempotency-Key`，後端用 Redis `SETNX` 判斷重複 |
+| Async Queue / Worker | 已完成 | Redis List `queue:favorite_products`、`business/worker/FavoriteProductWorker.java` |
+| Kong API Gateway | 已完成 | `gateway/kong.yml`、`docker-compose.yml` |
+| L7 Load Balancing | 已完成 | Kong upstream round-robin 到 `backend` / `backend-replica` |
+| Rate Limiting | 已完成 | Kong `rate-limiting` plugin，預設每分鐘 120 次 |
+| 前後端測試與 CI | 已完成 | `backend/src/test`、`frontend/src/*.test.js`、`.github/workflows/ci.yml` |
+
+尚未納入 production 等級治理的項目包含：Redis Queue retry / dead-letter queue、Idempotency response snapshot replay、集中式 log、metrics dashboard、distributed tracing、Kubernetes 部署。這些項目 README 會定位為後續擴充，不列為目前已完成。
+
+---
+
+## 最後驗證結果
+
+本次檢查已完成以下驗證：
+
+| 驗證項目 | 結果 |
+|---|---|
+| Docker Compose 設定檢查 | `docker compose config --quiet` 通過 |
+| Backend 測試 | Docker Maven 執行 `mvn test` 通過，17 tests passed |
+| Frontend 測試 | `npm run test` 通過，5 tests passed |
+| Frontend Build | `npm run build` 通過 |
+| Compose 實際啟動 | `docker compose up -d --build` 通過 |
+| Gateway Health Check | `GET /actuator/health` 回傳 200 |
+| Favorite List API | `GET /api/favorite-products/like-list` 回傳 200 |
+| Async POST | `POST /api/favorite-products` 回傳 202 Accepted |
+| Idempotency 重複提交 | 相同 `Idempotency-Key` 第二次送出回傳 400 |
+| Worker Queue 消化 | Redis `LLEN queue:favorite_products` 回到 0 |
+| Kong Rate Limiting | Response header 回傳 `X-RateLimit-Limit-Minute: 120` |
+
+---
+
 ## 系統設計目標
 
 本專案的設計目標不是單純完成 CRUD，而是模擬銀行系統在真實服務中可能遇到的工程問題，並以可學習、可觀察、可測試的方式實作對應解法。
@@ -338,14 +385,14 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Client->>Backend: POST /api/favorite-products
-    Backend->>Redis: SETNX idempotency:{hash} TTL 10s
+    Backend->>Redis: SETNX idempotency:{userId}:{Idempotency-Key} TTL 10s
 
     alt Duplicate Request
         Redis-->>Backend: false
         Backend-->>Client: 400 Duplicate Request
     else First Request
         Redis-->>Backend: true
-        Backend->>Redis: LPUSH favorite_product_queue
+        Backend->>Redis: LPUSH queue:favorite_products
         Backend-->>Client: 202 Accepted
 
         Redis-->>Worker: RPOP Queue Task
@@ -360,7 +407,7 @@ sequenceDiagram
 | 步驟 | 說明 |
 |---|---|
 | 1 | 使用者送出新增喜好商品請求 |
-| 2 | Backend 根據請求內容產生 Idempotency Key |
+| 2 | Backend 優先使用前端送出的 `Idempotency-Key`，若未提供才用 request 內容產生 fallback key |
 | 3 | Backend 使用 Redis `SETNX` 檢查是否為短時間重複提交 |
 | 4 | 若 Redis 回傳 false，代表已有相同請求正在處理或剛處理過，直接拒絕 |
 | 5 | 若 Redis 回傳 true，代表此請求可被接受 |
@@ -479,8 +526,9 @@ flowchart LR
 本系統使用 Redis `SETNX` 實作簡化版冪等性：
 
 ```java
+String redisIdempotencyKey = resolveIdempotencyKey(request, idempotencyKey);
 Boolean success = redisTemplate.opsForValue()
-    .setIfAbsent(idempotencyKey, "1", Duration.ofSeconds(10));
+    .setIfAbsent(redisIdempotencyKey, "1", Duration.ofSeconds(10));
 
 if (Boolean.FALSE.equals(success)) {
     throw new BadRequestException("Duplicate request, please try again later");
@@ -496,10 +544,11 @@ flowchart TD
     D -->|No| F[拒絕重複請求]
 ```
 
-目前此設計屬於簡化版冪等性，主要用於避免短時間重複提交。若要進一步接近正式金融系統，可以擴充為：
+目前前端會在 mutation request 自動帶入 `Idempotency-Key`，後端會優先使用這個 header 建立 Redis key；若 header 未提供，才以 request 內容產生 fallback key。此設計已可避免短時間重複提交。
 
-- 由前端傳入 `Idempotency-Key`
-- 儲存 request hash
+若要再接近正式金融系統，可擴充為：
+
+- 儲存 request hash，避免同一 key 被拿去送不同內容
 - 儲存 response snapshot
 - 支援第一次成功但 response timeout 時的結果重放
 - 設計 request 狀態：PROCESSING / SUCCESS / FAILED
@@ -746,6 +795,8 @@ sp_count_like_list
 backend/stress_test.py
 ```
 
+以下數字為本機 Docker Compose 測試樣本，用來展示優化方向，不代表正式 SLA。
+
 壓測條件：
 
 | 項目 | 設定 |
@@ -972,7 +1023,7 @@ keys *
 查看 queue 長度：
 
 ```sh
-llen favorite_product_queue
+llen queue:favorite_products
 ```
 
 ---

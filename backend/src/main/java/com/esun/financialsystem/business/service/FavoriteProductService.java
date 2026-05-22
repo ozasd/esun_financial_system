@@ -10,7 +10,7 @@ import java.util.List;
 
 public interface FavoriteProductService {
 
-    long postFavoriteProduct(PostFavoriteProductRequest request);
+    long postFavoriteProduct(PostFavoriteProductRequest request, String idempotencyKey);
 
     PagedResponse<LikeListResponse> getLikeList(GetLikeListRequest request);
 

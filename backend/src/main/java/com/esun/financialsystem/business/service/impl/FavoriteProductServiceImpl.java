@@ -1,32 +1,26 @@
 package com.esun.financialsystem.business.service.impl;
 
-import com.esun.financialsystem.presentation.request.PostFavoriteProductRequest;
+import com.esun.financialsystem.business.service.FavoriteProductService;
+import com.esun.financialsystem.common.exception.BadRequestException;
+import com.esun.financialsystem.data.repository.FavoriteProductRepository;
 import com.esun.financialsystem.presentation.request.GetLikeListRequest;
-import com.esun.financialsystem.presentation.request.PutFavoriteProductRequest
-;
+import com.esun.financialsystem.presentation.request.PostFavoriteProductRequest;
+import com.esun.financialsystem.presentation.request.PutFavoriteProductRequest;
 import com.esun.financialsystem.presentation.response.FavoriteProductResponse;
 import com.esun.financialsystem.presentation.response.LikeListResponse;
 import com.esun.financialsystem.presentation.response.PagedResponse;
-
-import com.esun.financialsystem.common.exception.BadRequestException;
-
-
-import com.esun.financialsystem.data.repository.FavoriteProductRepository;
-
-
-
-import com.esun.financialsystem.business.service.FavoriteProductService;
-import java.util.Set;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ThreadLocalRandom;
-import java.time.Duration;
-import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 // @Service
 // 告訴 Spring：這是一個 Service 層物件
@@ -57,20 +51,16 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
         this.objectMapper = objectMapper;
     }
 
-    // 新增商品商業邏輯
-    // 1. 驗證參數
-    // 2. 呼叫 Repository
-    // 3. Repository 再去操作 DB
+    // 新增商品商業邏輯：驗證參數、檢查冪等性、推入 Redis Queue。
     @Override
-    public long postFavoriteProduct(PostFavoriteProductRequest request) {
+    public long postFavoriteProduct(PostFavoriteProductRequest request, String idempotencyKey) {
         // 驗證 userId
         validateUserId(request.userId());
         validateAccount(request.account());
 
         // Idempotency 檢查
-        String idempotencyKey = String.format("idempotency:postFavoriteProduct:%s:%d:%s",
-                request.userId(), request.productNo(), request.account());
-        Boolean success = redisTemplate.opsForValue().setIfAbsent(idempotencyKey, "1", Duration.ofSeconds(10));
+        String redisIdempotencyKey = resolveIdempotencyKey(request, idempotencyKey);
+        Boolean success = redisTemplate.opsForValue().setIfAbsent(redisIdempotencyKey, "1", Duration.ofSeconds(10));
         if (Boolean.FALSE.equals(success)) {
             throw new BadRequestException("Duplicate request, please try again later");
         }
@@ -139,6 +129,7 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
 
     // 更新商品商業邏輯
     @Override
+    @Transactional
     public long putFavoriteProduct(long sn, PutFavoriteProductRequest request) {
         validateAccount(request.account());
         String userId = favoriteProductRepository.getUserIdBySn(sn);
@@ -155,6 +146,7 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
 
     // 刪除商品商業邏輯
     @Override
+    @Transactional
     public boolean deleteFavoriteProduct(long sn) {
         String userId = favoriteProductRepository.getUserIdBySn(sn);
         boolean deleted = favoriteProductRepository.deleteFavoriteProduct(sn);
@@ -170,6 +162,22 @@ public class FavoriteProductServiceImpl implements FavoriteProductService {
         } catch (Exception e) {
             // Ignore cache eviction errors
         }
+    }
+
+    private String resolveIdempotencyKey(PostFavoriteProductRequest request, String idempotencyKey) {
+        if (StringUtils.hasText(idempotencyKey)) {
+            String normalizedKey = idempotencyKey.trim();
+            if (normalizedKey.length() > 128) {
+                throw new BadRequestException("Idempotency-Key is too long");
+            }
+            return String.format("idempotency:postFavoriteProduct:%s:%s", request.userId().trim(), normalizedKey);
+        }
+        return String.format(
+                "idempotency:postFavoriteProduct:%s:%d:%d:%s",
+                request.userId().trim(),
+                request.productNo(),
+                request.purchaseQuantity(),
+                request.account().trim());
     }
 
     // 驗證邏輯

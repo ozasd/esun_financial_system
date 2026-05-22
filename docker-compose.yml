@@ -6,6 +6,8 @@ x-backend-common: &backend-common
   depends_on:
     postgres:
       condition: service_healthy
+    redis:
+      condition: service_healthy
   environment:
     DB_HOST: postgres
     DB_PORT: 5432
