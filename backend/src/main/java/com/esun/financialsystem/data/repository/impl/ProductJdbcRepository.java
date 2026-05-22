@@ -6,10 +6,7 @@ import com.esun.financialsystem.data.sql.ProductSql;
 import com.esun.financialsystem.presentation.request.GetProductRequest;
 import com.esun.financialsystem.presentation.response.ProductResponse;
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -28,113 +25,68 @@ public class ProductJdbcRepository implements ProductRepository {
 
     @Override
     public List<ProductResponse> getProduct(GetProductRequest request) {
-        List<Object> parameters = new ArrayList<>();
-        String sql = ProductSql.SELECT_PREFIX
-                + buildWhereClause(request, parameters)
-                + buildOrderClause(request)
-                + " LIMIT ? OFFSET ?";
-        parameters.add(resolvePageSize(request));
-        parameters.add(resolveOffset(request));
-        return jdbcTemplate.query(sql, productRowMapper, parameters.toArray());
+        return jdbcTemplate.query(
+                ProductSql.GET_PRODUCTS,
+                productRowMapper,
+                request.getNo(),
+                trimToNull(request.getProductName()),
+                trimToNull(request.getKeyword()),
+                request.getPriceMin(),
+                request.getPriceMax(),
+                request.getFeeRateMin(),
+                request.getFeeRateMax(),
+                resolveSortBy(request),
+                resolveSortDirection(request),
+                resolvePageSize(request),
+                resolveOffset(request));
     }
 
     @Override
     public long countProduct(GetProductRequest request) {
-        List<Object> parameters = new ArrayList<>();
         Long total = jdbcTemplate.queryForObject(
-                ProductSql.COUNT_PREFIX + buildWhereClause(request, parameters),
+                ProductSql.COUNT_PRODUCTS,
                 Long.class,
-                parameters.toArray());
+                request.getNo(),
+                trimToNull(request.getProductName()),
+                trimToNull(request.getKeyword()),
+                request.getPriceMin(),
+                request.getPriceMax(),
+                request.getFeeRateMin(),
+                request.getFeeRateMax());
         return total == null ? 0L : total;
     }
 
     @Override
     public Optional<ProductResponse> getProductById(long no) {
-        List<ProductResponse> products = jdbcTemplate.query(ProductSql.SELECT_BY_ID, productRowMapper, no);
+        List<ProductResponse> products = jdbcTemplate.query(ProductSql.GET_PRODUCT_BY_ID, productRowMapper, no);
         return products.stream().findFirst();
     }
 
     @Override
     public long postProduct(String productName, BigDecimal price, BigDecimal feeRate) {
-        Long no = jdbcTemplate.queryForObject(ProductSql.INSERT, Long.class, productName, price, feeRate);
+        Long no = jdbcTemplate.queryForObject(ProductSql.ADD_PRODUCT, Long.class, productName, price, feeRate);
         return no == null ? 0L : no;
     }
 
     @Override
     public Optional<Long> putProduct(long no, String productName, BigDecimal price, BigDecimal feeRate) {
-        List<Long> productNos = jdbcTemplate.query(
-                ProductSql.UPDATE,
-                (rs, rowNum) -> rs.getLong("no"),
+        Long updatedNo = jdbcTemplate.queryForObject(
+                ProductSql.UPDATE_PRODUCT,
+                Long.class,
+                no,
                 productName,
                 price,
-                feeRate,
-                no);
-        return productNos.stream().findFirst();
+                feeRate);
+        return Optional.ofNullable(updatedNo);
     }
 
     @Override
     public boolean deleteProduct(long no) {
-        List<Long> productNos = jdbcTemplate.query(
-                ProductSql.DELETE,
-                (rs, rowNum) -> rs.getLong("no"),
+        Long deletedNo = jdbcTemplate.queryForObject(
+                ProductSql.DELETE_PRODUCT,
+                Long.class,
                 no);
-        return !productNos.isEmpty();
-    }
-
-    private String buildWhereClause(GetProductRequest request, List<Object> parameters) {
-        StringBuilder whereClause = new StringBuilder(" WHERE TRUE");
-        String productName = trimToNull(request.getProductName());
-        String keyword = toKeywordPattern(request.getKeyword());
-
-        if (request.getNo() != null) {
-            whereClause.append(" AND p.no = ?");
-            parameters.add(request.getNo());
-        }
-        if (productName != null) {
-            whereClause.append(" AND p.product_name ILIKE ?");
-            parameters.add("%" + productName + "%");
-        }
-        if (request.getPriceMin() != null) {
-            whereClause.append(" AND p.price >= ?");
-            parameters.add(request.getPriceMin());
-        }
-        if (request.getPriceMax() != null) {
-            whereClause.append(" AND p.price <= ?");
-            parameters.add(request.getPriceMax());
-        }
-        if (request.getFeeRateMin() != null) {
-            whereClause.append(" AND p.fee_rate >= ?");
-            parameters.add(request.getFeeRateMin());
-        }
-        if (request.getFeeRateMax() != null) {
-            whereClause.append(" AND p.fee_rate <= ?");
-            parameters.add(request.getFeeRateMax());
-        }
-        if (keyword != null) {
-            whereClause.append("""
-                     AND (
-                        CAST(p.no AS TEXT) ILIKE ?
-                        OR p.product_name ILIKE ?
-                    )
-                    """);
-            parameters.add(keyword);
-            parameters.add(keyword);
-        }
-        return whereClause.toString();
-    }
-
-    private String buildOrderClause(GetProductRequest request) {
-        Map<String, String> allowedColumns = new LinkedHashMap<>();
-        allowedColumns.put("no", "p.no");
-        allowedColumns.put("product_name", "p.product_name");
-        allowedColumns.put("price", "p.price");
-        allowedColumns.put("fee_rate", "p.fee_rate");
-        allowedColumns.put("created_at", "p.created_at");
-        allowedColumns.put("updated_at", "p.updated_at");
-
-        String orderColumn = allowedColumns.getOrDefault(trimToNull(request.getSortBy()), "p.no");
-        String direction = "DESC".equalsIgnoreCase(trimToNull(request.getSortDirection())) ? "DESC" : "ASC";
-        return " ORDER BY " + orderColumn + " " + direction;
+        return deletedNo != null;
     }
 
     private int resolveOffset(GetProductRequest request) {
@@ -153,7 +105,13 @@ public class ProductJdbcRepository implements ProductRepository {
         return StringUtils.hasText(value) ? value.trim() : null;
     }
 
-    private String toKeywordPattern(String keyword) {
-        return StringUtils.hasText(keyword) ? "%" + keyword.trim() + "%" : null;
+    private String resolveSortBy(GetProductRequest request) {
+        String sortBy = trimToNull(request.getSortBy());
+        return sortBy == null ? "no" : sortBy;
+    }
+
+    private String resolveSortDirection(GetProductRequest request) {
+        String sortDirection = trimToNull(request.getSortDirection());
+        return "DESC".equalsIgnoreCase(sortDirection) ? "DESC" : "ASC";
     }
 }

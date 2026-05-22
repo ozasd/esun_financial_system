@@ -2,50 +2,23 @@ package com.esun.financialsystem.data.sql;
 
 public final class UserSql {
 
-    public static final String SELECT_PREFIX = """
-            SELECT
-                u.user_id,
-                u.user_name,
-                u.email,
-                u.account,
-                u.created_at,
-                u.updated_at
-            FROM "User" u
-            """;
+    public static final String GET_USERS =
+            "SELECT * FROM sp_get_users(?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-    public static final String COUNT_PREFIX = """
-            SELECT COUNT(*)
-            FROM "User" u
-            """;
+    public static final String COUNT_USERS =
+            "SELECT sp_count_users(?, ?, ?, ?, ?)";
 
-    public static final String SELECT_BY_ID = SELECT_PREFIX + " WHERE u.user_id = ?";
+    public static final String GET_USER_BY_ID =
+            "SELECT * FROM sp_get_user_by_id(?)";
 
-    public static final String INSERT = """
-            INSERT INTO "User" (
-                user_id,
-                user_name,
-                email,
-                account
-            ) VALUES (?, ?, ?, ?)
-            RETURNING user_id
-            """;
+    public static final String ADD_USER =
+            "SELECT sp_add_user(?, ?, ?, ?)";
 
-    public static final String UPDATE = """
-            UPDATE "User"
-            SET
-                user_name = ?,
-                email = ?,
-                account = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-            RETURNING user_id
-            """;
+    public static final String UPDATE_USER =
+            "SELECT sp_update_user(?, ?, ?, ?)";
 
-    public static final String DELETE = """
-            DELETE FROM "User"
-            WHERE user_id = ?
-            RETURNING user_id
-            """;
+    public static final String DELETE_USER =
+            "SELECT sp_delete_user(?)";
 
     private UserSql() {
     }

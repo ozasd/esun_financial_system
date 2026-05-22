@@ -2,6 +2,42 @@
 
 ## 金融商品喜好紀錄系統｜銀行高流量場景 × 系統設計教學範例
 
+## 交付重點
+
+本專案可直接以 Docker Compose 啟動完整三層式系統：
+
+```sh
+docker compose up -d --build
+```
+
+啟動後可從以下入口檢查：
+
+| 項目 | 入口 |
+|---|---|
+| 前端介面 | http://localhost:3000 |
+| API Gateway | http://localhost:8000 |
+| Backend Health Check | http://localhost:8000/actuator/health |
+| Like List API | http://localhost:8000/api/favorite-products/like-list |
+
+題目要求對照：
+
+| 要求 | 對應實作 |
+|---|---|
+| Vue.js 前端 | `frontend/src`，提供使用者、商品、喜好清單操作介面 |
+| Spring Boot RESTful API | `backend/src/main/java/com/esun/financialsystem/presentation/controller` |
+| Maven 專案 | `backend/pom.xml`，Java 17 / Spring Boot 3 |
+| 三層式架構 | Nginx Web Server + Spring Boot Application Server + PostgreSQL |
+| 後端分層 | `presentation`、`business`、`data`、`common` |
+| Stored Procedure 存取 DB | `db/03_procedures.sql`；User、Product、FavoriteProduct Repository 皆透過 `SELECT sp_*` 呼叫 |
+| Transaction | Service `@Transactional` 搭配 Stored Procedure 內 `FOR UPDATE` |
+| DDL / DML | `db/01_schema.sql`、`db/02_seed.sql`、`db/03_procedures.sql`、`db/04_indexes.sql` |
+| SQL Injection 防護 | JDBC placeholder、Stored Procedure 參數化、排序欄位白名單 |
+| XSS 防護 | Vue template binding 預設 escape，不使用 `v-html` |
+
+樣本資料已內建於 `db/02_seed.sql`，包含 10 筆使用者、10 筆金融商品與 18 筆喜好清單，可直接展示搜尋、排序、分頁與金額計算。
+
+---
+
 ## 專案情境
 
 在銀行與金融服務場景中，系統通常需要同時面對大量使用者查詢、短時間內重複提交、資料一致性要求、API 流量控管，以及後續維護與擴充需求。
@@ -58,8 +94,8 @@
 |---|---|---|
 | 題目核心 CRUD | 已完成 | `frontend/src/components/*Panel.vue`、`backend/src/main/java/com/esun/financialsystem/presentation/controller` |
 | 後端分層 | 已完成 | `presentation`、`business`、`data`、`common` |
-| JDBC + SQL 組合 | 已完成 | `data/repository/impl/*JdbcRepository.java`、`data/sql/*Sql.java` |
-| Stored Procedure | 已完成 | `db/03_procedures.sql` |
+| JDBC 呼叫 Stored Procedure | 已完成 | `data/repository/impl/*JdbcRepository.java`、`data/sql/*Sql.java` |
+| Stored Procedure | 已完成 | `db/03_procedures.sql`，User / Product / FavoriteProduct DB 存取皆透過 `sp_*` |
 | Transaction / Row Lock | 已完成 | Service `@Transactional`、Stored Procedure `FOR UPDATE` |
 | SQL Injection 防護 | 已完成 | JDBC placeholder、排序欄位白名單、Stored Procedure 參數化 |
 | XSS 防護 | 已完成 | Vue template binding 預設 escape，不使用 `v-html` |
@@ -86,7 +122,7 @@
 | 驗證項目 | 結果 |
 |---|---|
 | Docker Compose 設定檢查 | `docker compose config --quiet` 通過 |
-| Backend 測試 | Docker Maven 執行 `mvn test` 通過，17 tests passed |
+| Backend 測試 | Docker Maven 執行 `mvn test` 通過，19 tests passed |
 | Frontend 測試 | `npm run test` 通過，5 tests passed |
 | Frontend Build | `npm run build` 通過 |
 | Compose 實際啟動 | `docker compose up -d --build` 通過 |
