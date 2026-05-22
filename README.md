@@ -795,7 +795,8 @@ sp_count_like_list
 backend/stress_test.py
 ```
 
-以下數字為本機 Docker Compose 測試樣本，用來展示優化方向，不代表正式 SLA。
+以下數字為本機 Docker Compose 測試樣本，用來展示優化方向，不代表正式 SLA。  
+最後更新壓測時間：2026-05-22。
 
 壓測條件：
 
@@ -806,6 +807,7 @@ backend/stress_test.py
 | 測試環境 | Local Docker Compose |
 | 測試 API | localhost:8081 |
 | 說明 | 避開 Kong Rate Limiting，單純測試 backend 效能 |
+| 寫入測試資料 | 使用 seed 內有效 user / product / account，並為每筆 POST 加唯一 `Idempotency-Key` |
 
 ---
 
@@ -813,12 +815,12 @@ backend/stress_test.py
 
 | 測試情境 | 吞吐量 RPS | 平均回應時間 | P95 回應時間 |
 |---|---:|---:|---:|
-| 無快取，直接查 PostgreSQL | 約 675 req/s | 143.88 ms | 444.52 ms |
-| 使用 Redis Cache | 約 2586 req/s | 36.61 ms | 77.59 ms |
+| 無快取，直接查 PostgreSQL | 約 1700.93 req/s | 56.39 ms | 126.25 ms |
+| 使用 Redis Cache | 約 2706.93 req/s | 35.40 ms | 88.02 ms |
 
 結論：
 
-Redis Cache 讓讀取吞吐量提升約 3.8 倍，平均延遲降低約 74%。  
+Redis Cache 讓讀取吞吐量提升約 1.59 倍，平均延遲降低約 37%。  
 在高併發查詢場景下，Cache 可以有效降低 PostgreSQL 壓力。
 
 ---
@@ -827,12 +829,12 @@ Redis Cache 讓讀取吞吐量提升約 3.8 倍，平均延遲降低約 74%。
 
 | 測試情境 | 吞吐量 RPS | 平均回應時間 | P95 回應時間 |
 |---|---:|---:|---:|
-| Redis Queue 非同步寫入 | 約 1209 req/s | 78.88 ms | 176.29 ms |
+| Redis Queue 非同步寫入 | 約 3169.83 req/s | 29.81 ms | 52.46 ms |
 
 結論：
 
 API 僅負責驗證請求與推入 Redis Queue，因此可以快速回應。  
-真正的 DB 寫入由 Worker 背景處理，達成削峰填谷效果。
+真正的 DB 寫入由 Worker 背景處理，達成削峰填谷效果。本次壓測後確認 Redis queue 回到 0，且 1000 筆有效任務皆已由 Worker 寫入資料庫；測試完成後已清除壓測新增資料。
 
 ---
 
